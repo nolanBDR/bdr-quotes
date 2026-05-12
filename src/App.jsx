@@ -180,7 +180,7 @@ function getRate(origin, rateCity, skids, weightLbs, lineItems, footage) {
 }
 
 async function parseEmailWithClaude(text) {
-  const res = await fetch("/api/anthropic/v1/messages", {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST", headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body: JSON.stringify({
       model:"claude-opus-4-7", max_tokens:2048,
@@ -235,7 +235,7 @@ RULES:
 }
 
 async function geocodeCity(city, state) {
-  const res = await fetch("/api/anthropic/v1/messages", {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST", headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body: JSON.stringify({
       model:"claude-opus-4-7", max_tokens:60,
