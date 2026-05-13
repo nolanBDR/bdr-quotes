@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 
-const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_KEY || "";
+const ANTHROPIC_KEY = (() => { try { return import.meta.env.VITE_ANTHROPIC_KEY || ""; } catch(e) { return ""; } })();
 
 // ── Rate Sheet ────────────────────────────────────────────────
 const RATES = {
@@ -106,7 +106,7 @@ function calcLineItem(skids, dimL, dimW, dimH, stackHeight) {
   const L        = dimL || 0;   // first number = Length (as written by broker)
   const W        = dimW || 0;   // second number = Width
   const H        = dimH || 0;   // third number = Height
-  const divisor  = W > 48 ? 12 : 24;
+  const divisor  = W > 48 ? 12 : W < 32 ? 36 : 24;
   const rawFt    = (L * skids) / divisor;
   const stackH   = stackHeight || 1;
   const netFt    = rawFt / stackH;
@@ -180,10 +180,12 @@ function getRate(origin, rateCity, skids, weightLbs, lineItems, footage) {
 }
 
 async function parseEmailWithClaude(text) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+  let res, attempts = 0;
+  while (attempts < 3) {
+    res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST", headers:{"Content-Type":"application/json",...(ANTHROPIC_KEY ? {"x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"} : {})},
     body: JSON.stringify({
-      model:"claude-opus-4-7", max_tokens:2048,
+      model:"claude-3-5-haiku-20241022", max_tokens:2048,
       system:`Parse LTL freight quote emails for a Canadian carrier (GTA/Montreal pickup).
 An email may contain ONE or MULTIPLE separate shipment requests. Return ONLY JSON, no markdown:
 {
@@ -217,6 +219,7 @@ An email may contain ONE or MULTIPLE separate shipment requests. Return ONLY JSO
 RULES:
 - Multiple destinations, different dates, or clearly separate loads = separate shipments[] entries.
 - dim format L x W x H, preserve broker order exactly.
+- footage divisor: W < 32" = 36 (3 skids across), W <= 48" = 24 (2 across), W > 48" = 12 (1 across).
 - stack_height: stackable=2, stackable 3 high=3, not stackable=null.
 - footage: only if broker gives footage with no skid count or dimensions.
 - line_items: each numbered item (e.g. "1. 89L x 45W x 67H") is 1 skid. The number before the dot is the item sequence, NOT the skid count. Always set skids=1 for each numbered line item unless the broker explicitly says otherwise (e.g. "2 skids 89L x 45W x 67H").
@@ -224,6 +227,11 @@ RULES:
       messages:[{role:"user",content:`Parse this:\n\n${text}`}],
     }),
   });
+  if (res.status === 529 || res.status === 503) {
+    attempts++;
+    await new Promise(r => setTimeout(r, 2000 * attempts));
+    continue;
+  }
   const data = await res.json();
   const result = JSON.parse(data.content.map(b=>b.text||"").join("").replace(/[`]{3}json|[`]{3}/g,"").trim());
   return (result.shipments||[result]).map(s => ({
@@ -232,13 +240,15 @@ RULES:
     broker_first_name: s.broker_first_name || result.broker_first_name,
     broker_company: s.broker_company || result.broker_company,
   }));
+  }
+  throw new Error("API overloaded after 3 attempts. Please try again.");
 }
 
 async function geocodeCity(city, state) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    method:"POST", headers:{"Content-Type":"application/json",...(ANTHROPIC_KEY ? {"x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"} : {})},
     body: JSON.stringify({
-      model:"claude-opus-4-7", max_tokens:60,
+      model:"claude-3-5-haiku-20241022", max_tokens:60,
       system:`Return ONLY {"lat":number,"lon":number} for the city. No markdown.`,
       messages:[{role:"user",content:`Coordinates for ${city}${state?", "+state:""}, USA`}],
     }),
@@ -1064,7 +1074,7 @@ export default function App() {
                   }} style={{ fontSize:12, padding:"4px 12px", background:C.navy, color:"#fff", border:"none", borderRadius:6, cursor:"pointer" }}>+ Add line</button>
                 </div>
                 <div style={{ fontSize:12, color:C.muted, marginBottom:12 }}>
-                  W ≤ 48": (L × skids) ÷ 24 = footage &nbsp;|&nbsp; W &gt; 48": (L × skids) ÷ 12 = footage &nbsp;|&nbsp; Stackable ÷ stack height
+                  W &lt; 32": ÷ 36 (3 across) &nbsp;|&nbsp; W ≤ 48": ÷ 24 (2 across) &nbsp;|&nbsp; W &gt; 48": ÷ 12 (1 across) &nbsp;|&nbsp; Stackable ÷ stack height
                 </div>
 
                 {/* Line item table */}
