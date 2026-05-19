@@ -1375,6 +1375,8 @@ export default function App() {
           total: parsed.freight_charge || null,
           thread_id: email.threadId,
           email_subject: subject,
+          gmail_msg_id: id,
+          pdf_attachment_id: pdfPart?.body?.attachmentId || null,
         };
         await window.storage.set(`bdr_quote:${now}`, JSON.stringify(record));
         setHistory(prev => [record, ...prev]);
@@ -1655,7 +1657,14 @@ export default function App() {
           origin: p.origin || p.pickup_location || "",
           dest_city: p.dest_city || "", dest_state: p.dest_state || "",
           skids: p.skids, weight_lbs: p.weight_lbs,
-          base_rate: rr.base, fsc: 0.18, total: r5(rr.base * 1.18),
+          base_rate: rr.base, fsc: q.emailFsc ?? 0.18, total: (() => {
+            const fscV = q.emailFsc ?? 0.18;
+            const accs = q.emailAccs || {};
+            const sub  = r5(rr.base * (1 + fscV));
+            const fl   = accs["fl"] ? r5(sub * 1.10) : sub;
+            const fixed = (accs["da"]?75:0)+(accs["lg"]?75:0)+(accs["nc"]?150:0)+(accs["st"]?100:0)+(parseFloat(q.emailCustomAcc||"")||0);
+            return r5(fl + fixed);
+          })(),
           rate_city: rc?.city, basis_label: rr.basisLabel, charge_skids: SKID_LABELS[rr.chargeIdx],
           quote_text: quoteText,
           // Gmail tracking fields
@@ -2771,6 +2780,21 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                   <div style={{ fontSize:15, fontWeight:700, color:"#0369a1" }}>${r5(q.total)}</div>
                                 </div>
                               )}
+                              {q.gmail_msg_id && q.pdf_attachment_id && (
+                                <button onClick={async () => {
+                                  if (!gmailToken) { alert("Connect Gmail to view PDF"); return; }
+                                  try {
+                                    const b64 = await fetchGmailPdfBase64(gmailToken, q.gmail_msg_id, q.pdf_attachment_id);
+                                    const bin = atob(b64);
+                                    const bytes = new Uint8Array(bin.length);
+                                    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                                    const blob = new Blob([bytes], { type: "application/pdf" });
+                                    window.open(URL.createObjectURL(blob), "_blank");
+                                  } catch(e) { alert("Could not load PDF: " + e.message); }
+                                }} style={{ marginLeft:"auto", padding:"6px 14px", background:"#0369a1", color:"#fff", border:"none", borderRadius:6, fontSize:12, fontWeight:600, cursor:"pointer", flexShrink:0 }}>
+                                  📄 View PDF
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -3011,7 +3035,9 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       const customAccVal = q?.emailCustomAcc || "";
                       const floorloaded = !!accsVal["fl"];
                       const calcSubtotal = q?.rateResult?.base ? r5(q.rateResult.base * (1 + fscVal)) : null;
-                      const calcTotal    = calcSubtotal ? (floorloaded ? r5(calcSubtotal * 1.10) : calcSubtotal) : null;
+                      const afterFloor   = calcSubtotal ? (floorloaded ? r5(calcSubtotal * 1.10) : calcSubtotal) : null;
+                      const fixedAccs    = (accsVal["da"] ? 75 : 0) + (accsVal["lg"] ? 75 : 0) + (accsVal["nc"] ? 150 : 0) + (accsVal["st"] ? 100 : 0) + (parseFloat(customAccVal) || 0);
+                      const calcTotal    = afterFloor ? r5(afterFloor + fixedAccs) : null;
                       const accList  = ACC_OPTS.filter(a => accsVal[a.id] && a.id !== "fl");
 
                       return (
