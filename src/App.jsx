@@ -898,7 +898,10 @@ export default function App() {
   const [agentAlerts,   setAgentAlerts]   = useState([]);
 
   // Keep refs in sync for use inside callbacks
-  useEffect(() => { gmailQuotesRef.current = gmailQuotes; }, [gmailQuotes]);
+  useEffect(() => {
+    gmailQuotesRef.current = gmailQuotes;
+    try { localStorage.setItem("bdr_gmail_quotes", JSON.stringify(gmailQuotes)); } catch(e) {}
+  }, [gmailQuotes]);
   useEffect(() => { gmailTokenRef.current = gmailToken; }, [gmailToken]);
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { contactRef.current = contact; }, [contact]);
@@ -986,6 +989,26 @@ export default function App() {
       try {
         const sd = await window.storage.get("bdr_slot_drivers");
         if (sd) setSlotDrivers(JSON.parse(sd.value));
+      } catch(e) {}
+
+      // Restore Gmail session if token hasn't expired
+      try {
+        const raw = localStorage.getItem("bdr_gmail_session");
+        if (raw) {
+          const session = JSON.parse(raw);
+          if (session.token && session.expiresAt > Date.now()) {
+            setGmailToken(session.token);
+            setGmailUser(session.user || "");
+          } else {
+            localStorage.removeItem("bdr_gmail_session");
+          }
+        }
+      } catch(e) {}
+
+      // Restore gmailQuotes so email cards keep their rates after refresh
+      try {
+        const gq = localStorage.getItem("bdr_gmail_quotes");
+        if (gq) setGmailQuotes(JSON.parse(gq));
       } catch(e) {}
     })();
   }, []);
@@ -1235,11 +1258,15 @@ export default function App() {
       callback: async (resp) => {
         if (!resp.access_token) return;
         setGmailToken(resp.access_token);
+        const expiresAt = Date.now() + (resp.expires_in ? resp.expires_in * 1000 : 3600000);
         try {
           const u = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", { headers: { Authorization: `Bearer ${resp.access_token}` } });
           const ud = await u.json();
           setGmailUser(ud.email || "");
-        } catch(e) {}
+          localStorage.setItem("bdr_gmail_session", JSON.stringify({ token: resp.access_token, user: ud.email || "", expiresAt }));
+        } catch(e) {
+          localStorage.setItem("bdr_gmail_session", JSON.stringify({ token: resp.access_token, user: "", expiresAt }));
+        }
         await fetchInbox(resp.access_token);
       },
     });
@@ -1596,9 +1623,10 @@ export default function App() {
   useEffect(() => { processGmailEmailRef.current = processGmailEmail; }, [processGmailEmail]);
   useEffect(() => { fetchInboxRef.current = fetchInbox; }, [fetchInbox]);
 
-  // Auto-poll Gmail every 5 minutes when connected
+  // Auto-poll Gmail every 5 minutes when connected; also fetch on token restore
   useEffect(() => {
     if (!gmailToken) return;
+    fetchInboxRef.current?.(gmailToken);
     const id = setInterval(() => { if (gmailTokenRef.current) fetchInboxRef.current?.(gmailTokenRef.current); }, 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [gmailToken]);
