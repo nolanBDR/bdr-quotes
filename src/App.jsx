@@ -241,6 +241,44 @@ function findNearestRateCity(lat, lon, destCity) {
 const LBS_PER_SKID = 1700;
 const r5 = v => Math.round(v / 5) * 5;  // round to nearest $5
 
+const PIE_COLORS = ["#3b82f6","#f59e0b","#10b981","#ef4444","#8b5cf6","#f97316","#06b6d4","#ec4899","#84cc16","#a855f7"];
+
+function LanePieChart({ slices }) {
+  if (!slices.length) return null;
+  const total = slices.reduce((s, x) => s + x.count, 0);
+  const cx = 70, cy = 70, r = 60;
+  let angle = -Math.PI / 2;
+  const paths = slices.map((s, i) => {
+    const sweep = (s.count / total) * 2 * Math.PI;
+    const x1 = cx + r * Math.cos(angle);
+    const y1 = cy + r * Math.sin(angle);
+    angle += sweep;
+    const x2 = cx + r * Math.cos(angle);
+    const y2 = cy + r * Math.sin(angle);
+    const large = sweep > Math.PI ? 1 : 0;
+    const d = slices.length === 1
+      ? `M ${cx} ${cy} m -${r} 0 a ${r} ${r} 0 1 1 ${r*2} 0 a ${r} ${r} 0 1 1 -${r*2} 0`
+      : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
+    return { d, color: PIE_COLORS[i % PIE_COLORS.length], label: s.lane, count: s.count };
+  });
+  return (
+    <div style={{ display:"flex", gap:16, alignItems:"center", flexWrap:"wrap" }}>
+      <svg width={140} height={140} style={{ flexShrink:0 }}>
+        {paths.map((p, i) => <path key={i} d={p.d} fill={p.color} stroke="#fff" strokeWidth={1.5}/>)}
+      </svg>
+      <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+        {paths.map((p, i) => (
+          <div key={i} style={{ display:"flex", alignItems:"center", gap:7, fontSize:12 }}>
+            <div style={{ width:10, height:10, borderRadius:3, background:p.color, flexShrink:0 }}/>
+            <span style={{ color:"#374151", fontWeight:500 }}>{p.label}</span>
+            <span style={{ color:"#9ca3af", fontSize:11 }}>({p.count} quote{p.count!==1?"s":""})</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Footage rules ─────────────────────────────────────────────
 // Format is L×W×H as written by the broker (positional — first number is always L)
 // Width ≤ 48": two skids fit side by side → divisor = 24
@@ -2320,6 +2358,23 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   (q.broker_company||"").toLowerCase().includes((c.company||"").toLowerCase()) ||
                   (c.company||"").toLowerCase().includes((q.broker_company||"").toLowerCase())
                 ).length;
+                // Build lane slices from history
+                const custQuotes = history.filter(q => {
+                  const bc = (q.broker_company||"").toLowerCase();
+                  const cc = (c.company||"").toLowerCase();
+                  return cc && (bc.includes(cc) || cc.includes(bc));
+                });
+                const laneMap = {};
+                custQuotes.forEach(q => {
+                  if (!q.dest_city || !q.dest_state) return;
+                  const key = `${q.dest_city}, ${q.dest_state}`;
+                  laneMap[key] = (laneMap[key] || 0) + 1;
+                });
+                const laneSlices = Object.entries(laneMap)
+                  .sort((a,b) => b[1]-a[1])
+                  .slice(0, 8)
+                  .map(([lane, count]) => ({ lane, count }));
+
                 return (
                   <div key={c.id} style={{ ...card, marginBottom:10, padding:0, overflow:"hidden" }}>
                     <div style={{ display:"flex", alignItems:"stretch" }}>
@@ -2361,6 +2416,12 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         </button>
                       </div>
                     </div>
+                    {laneSlices.length > 0 && (
+                      <div style={{ borderTop:`1px solid ${C.border}`, padding:"14px 20px", background:"#fafcff" }}>
+                        <div style={{ fontSize:11, fontWeight:700, color:"#6b7280", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:12 }}>Top Lanes</div>
+                        <LanePieChart slices={laneSlices} />
+                      </div>
+                    )}
                   </div>
                 );
               })
