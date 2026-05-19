@@ -2358,11 +2358,17 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   (q.broker_company||"").toLowerCase().includes((c.company||"").toLowerCase()) ||
                   (c.company||"").toLowerCase().includes((q.broker_company||"").toLowerCase())
                 ).length;
-                // Build lane slices from history
+                // Build lane slices from history — match on company, broker_name, or email
                 const custQuotes = history.filter(q => {
-                  const bc = (q.broker_company||"").toLowerCase();
                   const cc = (c.company||"").toLowerCase();
-                  return cc && (bc.includes(cc) || cc.includes(bc));
+                  if (!cc) return false;
+                  const bc  = (q.broker_company||"").toLowerCase();
+                  const bn  = (q.broker_name||"").toLowerCase();
+                  const be  = (q.broker_email||"").toLowerCase();
+                  const ce  = (c.email||"").toLowerCase();
+                  return bc.includes(cc) || cc.includes(bc) ||
+                         bn.includes(cc) || cc.includes(bn) ||
+                         (ce && be && be.includes(ce.split("@")[1]||"__"));
                 });
                 const laneMap = {};
                 custQuotes.forEach(q => {
@@ -2416,12 +2422,13 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         </button>
                       </div>
                     </div>
-                    {laneSlices.length > 0 && (
-                      <div style={{ borderTop:`1px solid ${C.border}`, padding:"14px 20px", background:"#fafcff" }}>
-                        <div style={{ fontSize:11, fontWeight:700, color:"#6b7280", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:12 }}>Top Lanes</div>
-                        <LanePieChart slices={laneSlices} />
-                      </div>
-                    )}
+                    <div style={{ borderTop:`1px solid ${C.border}`, padding:"14px 20px", background:"#fafcff" }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:"#6b7280", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:12 }}>Top Lanes</div>
+                      {laneSlices.length > 0
+                        ? <LanePieChart slices={laneSlices} />
+                        : <div style={{ fontSize:12, color:"#9ca3af" }}>No quote history found for this customer yet.</div>
+                      }
+                    </div>
                   </div>
                 );
               })
