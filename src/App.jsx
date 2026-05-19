@@ -1267,7 +1267,7 @@ export default function App() {
         } catch(e) {
           localStorage.setItem("bdr_gmail_session", JSON.stringify({ token: resp.access_token, user: "", expiresAt }));
         }
-        await fetchInbox(resp.access_token);
+        // fetchInbox is triggered by the gmailToken useEffect — no need to call it here too
       },
     });
     if (!client) { alert("Google Identity Services not loaded yet — wait a moment and try again."); return; }
@@ -1873,7 +1873,7 @@ export default function App() {
         // Check for broker replies on waiting & broker_sending quotes
         if ((quote.outcome === "waiting" || quote.outcome === "broker_sending" || quote.outcome === "counter") && quote.thread_id) {
           await checkThreadForReplies(quote);
-          await new Promise(r => setTimeout(r, 1000));
+          await new Promise(r => setTimeout(r, 3000));
         }
       }
     };
