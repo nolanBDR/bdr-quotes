@@ -2488,7 +2488,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
         </div>
       ) : tab === "history" ? (
         /* ══ HISTORY / PIPELINE TAB ══ */
-        <div style={{ maxWidth:1400, margin:"0 auto", padding:"28px 32px" }}>
+        <div style={{ padding:"28px 32px" }}>
           {/* Header */}
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
             <div>
