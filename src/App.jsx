@@ -726,7 +726,8 @@ async function fetchGmailPdfBase64(token, messageId, attachmentId) {
   return (data.data || "").replace(/-/g, "+").replace(/_/g, "/");
 }
 
-const LOAD_SHEET_KEYWORDS = ["load sheet", "order confirmation", "load confirmation", "booking confirmation", "rate confirmation", "dispatch", "shipment confirmation"];
+const LOAD_SHEET_KEYWORDS = ["load sheet", "order confirmation", "load confirmation", "booking confirmation", "rate confirmation", "dispatch", "shipment confirmation", "carrier confirmation"];
+const CARRIER_CONF_KEYWORDS = ["carrier confirmation"];
 
 function isLoadSheetEmail(subject, body) {
   const text = (subject + " " + (body || "")).toLowerCase();
@@ -1254,6 +1255,64 @@ export default function App() {
     const subject = headers.find(h => h.name === "Subject")?.value || "";
     const from    = headers.find(h => h.name === "From")?.value || "";
     const body    = getEmailBody(email.payload);
+
+    // ── Carrier confirmation detection (sent loads) ──
+    const isCarrierConf = hasPdfAttachment(email.payload) && CARRIER_CONF_KEYWORDS.some(k => (subject + " " + (body||"")).toLowerCase().includes(k));
+    if (isCarrierConf) {
+      setGmailQuotes(prev => ({ ...prev, [id]: { status: "processing" } }));
+      try {
+        const pdfPart = getPdfAttachmentPart(email.payload);
+        let pdfBase64;
+        if (pdfPart?.body?.attachmentId && gmailTokenRef.current) {
+          pdfBase64 = await fetchGmailPdfBase64(gmailTokenRef.current, id, pdfPart.body.attachmentId);
+        } else if (pdfPart?.body?.data) {
+          pdfBase64 = pdfPart.body.data.replace(/-/g, "+").replace(/_/g, "/");
+        }
+        const pdfResult = pdfBase64 ? await parsePDFWithClaude(pdfBase64) : null;
+        const parsed = pdfResult?.shipments?.[0] || pdfResult || {};
+        const norm = normalizeShipment(parsed);
+        const coords = (!norm.dest_lat && norm.dest_city) ? await geocodeCity(norm.dest_city, norm.dest_state) : null;
+        if (coords) { norm.dest_lat = coords.lat; norm.dest_lon = coords.lon; }
+        const now = Date.now();
+        const senderName = from.replace(/<.*>/, "").trim() || from;
+        const record = {
+          timestamp: now,
+          outcome: "sent_load",
+          source: "carrier_confirmation",
+          date: new Date().toLocaleDateString("en-CA"),
+          time: new Date().toLocaleTimeString("en-CA", { hour:"2-digit", minute:"2-digit" }),
+          broker_name: pdfResult?.broker_name || parsed.broker_name || senderName,
+          broker_company: pdfResult?.broker_company || parsed.broker_company || "",
+          broker_email: (from.match(/<(.+?)>/) || [])[1] || from,
+          origin: norm.origin || "Ontario",
+          pickup_location: norm.pickup_location || "",
+          dest_city: norm.dest_city || "",
+          dest_state: norm.dest_state || "",
+          dest_lat: norm.dest_lat || null,
+          dest_lon: norm.dest_lon || null,
+          skids: norm.skids,
+          footage: norm.footage,
+          weight_lbs: norm.weight_lbs,
+          commodity: norm.commodity,
+          pickup_date: norm.pickup_date,
+          delivery_date: norm.delivery_date,
+          consignee: norm.consignee,
+          delivery_address: norm.delivery_address,
+          reference_number: norm.reference_number,
+          carrier_name: parsed.carrier_name || "",
+          base_rate: parsed.freight_charge || null,
+          total: parsed.freight_charge || null,
+          thread_id: email.threadId,
+          email_subject: subject,
+        };
+        await window.storage.set(`bdr_quote:${now}`, JSON.stringify(record));
+        setHistory(prev => [record, ...prev]);
+        setGmailQuotes(prev => ({ ...prev, [id]: { status: "sent_load", matchedTimestamp: now, brokerName: record.broker_name } }));
+      } catch(e) {
+        setGmailQuotes(prev => ({ ...prev, [id]: { status: "error", error: e.message } }));
+      }
+      return;
+    }
 
     // ── Load sheet / order confirmation detection ──
     if (hasPdfAttachment(email.payload) && isLoadSheetEmail(subject, body)) {
@@ -2544,6 +2603,73 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     ))}
                   </div>
                 )}
+
+                {/* ── Sent Loads ── */}
+                {(() => {
+                  const sentLoads = history.filter(q => q.outcome === "sent_load").sort((a,b) => (a.pickup_date||"").localeCompare(b.pickup_date||"") || b.timestamp - a.timestamp);
+                  return (
+                  <div style={{ marginTop: 24 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:"#0369a1", marginBottom:8, textTransform:"uppercase", letterSpacing:"0.05em" }}>🚛 Sent Loads</div>
+                    {sentLoads.length === 0 ? (
+                      <div style={{ ...card, textAlign:"center", padding:"24px", color:C.muted, fontSize:13 }}>
+                        No sent loads yet. Carrier confirmation emails with PDF attachments will appear here automatically.
+                      </div>
+                    ) : (
+                      sentLoads.map(q => (
+                        <div key={q.timestamp} style={{ ...card, padding:0, overflow:"hidden", marginBottom:8, border:"1.5px solid #bae6fd" }}>
+                          <div style={{ display:"flex", alignItems:"stretch" }}>
+                            <div style={{ width:5, background:"#0ea5e9", flexShrink:0 }}/>
+                            <div style={{ flex:1, padding:"12px 18px", display:"flex", alignItems:"center", gap:20, flexWrap:"wrap" }}>
+                              <div style={{ minWidth:110 }}>
+                                <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase" }}>Pickup Date</div>
+                                <div style={{ fontSize:14, fontWeight:700, color:C.navy }}>{q.pickup_date || q.date}</div>
+                              </div>
+                              {q.delivery_date && (
+                                <div style={{ minWidth:110 }}>
+                                  <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase" }}>Delivery Date</div>
+                                  <div style={{ fontSize:13, fontWeight:600 }}>{q.delivery_date}</div>
+                                </div>
+                              )}
+                              <div style={{ minWidth:140 }}>
+                                <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase" }}>Broker</div>
+                                <div style={{ fontSize:13, fontWeight:600 }}>{q.broker_name}</div>
+                                {q.broker_company && <div style={{ fontSize:11, color:C.muted }}>{q.broker_company}</div>}
+                              </div>
+                              <div style={{ minWidth:180 }}>
+                                <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase" }}>Lane</div>
+                                <div style={{ fontSize:13, fontWeight:600 }}>{q.origin} → {q.dest_city}, {q.dest_state}</div>
+                                {q.delivery_address && <div style={{ fontSize:11, color:C.muted }}>{q.delivery_address}</div>}
+                              </div>
+                              {q.consignee && (
+                                <div style={{ minWidth:140 }}>
+                                  <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase" }}>Consignee</div>
+                                  <div style={{ fontSize:13 }}>{q.consignee}</div>
+                                </div>
+                              )}
+                              <div style={{ minWidth:80 }}>
+                                <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase" }}>Skids</div>
+                                <div style={{ fontSize:13 }}>{q.skids}{q.footage ? ` · ${q.footage}ft` : ""}</div>
+                              </div>
+                              {q.reference_number && (
+                                <div style={{ minWidth:100 }}>
+                                  <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase" }}>Ref #</div>
+                                  <div style={{ fontSize:13, fontWeight:600 }}>{q.reference_number}</div>
+                                </div>
+                              )}
+                              {q.total && (
+                                <div style={{ minWidth:80 }}>
+                                  <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase" }}>Rate</div>
+                                  <div style={{ fontSize:15, fontWeight:700, color:"#0369a1" }}>${r5(q.total)}</div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  );
+                })()}
               </>
             );
           })()}
@@ -2980,8 +3106,9 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       const date     = hdrs.find(h=>h.name==="Date")?.value || "";
                       const fromName = from.replace(/<.*>/, "").trim() || from;
                       const isLoadSheet = q?.status === "load_sheet";
+                      const isSentLoad  = q?.status === "sent_load";
                       // Match to history record by threadId or saved matchedTimestamp
-                      const histMatch = isLoadSheet
+                      const histMatch = (isLoadSheet || isSentLoad)
                         ? history.find(h => h.timestamp === q.matchedTimestamp) || history.find(h => h.thread_id === email.threadId)
                         : history.find(h => h.thread_id === email.threadId);
                       const outcome   = histMatch?.outcome;
@@ -2991,8 +3118,11 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         received:       { label:"✓ Received",         color:C.green,   bg:"#f0fdf4" },
                         lost:           { label:"✗ Lost",             color:C.error,   bg:"#fef2f2" },
                         counter:        { label:"🔄 Counter Offer",   color:"#b45309", bg:"#fffbeb" },
+                        sent_load:      { label:"🚛 Sent Load",        color:"#0369a1", bg:"#eff6ff" },
                       };
-                      const oi = isLoadSheet
+                      const oi = isSentLoad
+                        ? { label:"🚛 Carrier Confirmation", color:"#0369a1", bg:"#eff6ff" }
+                        : isLoadSheet
                         ? { label:"📄 Load Sheet", color:C.green, bg:"#f0fdf4" }
                         : outcome ? OUTCOME_INFO[outcome] : { label:"Sent", color:"#6366f1", bg:"#eef2ff" };
                       return (
