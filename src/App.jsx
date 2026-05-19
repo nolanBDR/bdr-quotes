@@ -1631,6 +1631,13 @@ export default function App() {
       if (!res.ok) { const err = await res.json(); throw new Error(err.error?.message || "Send failed"); }
       setGmailQuotes(prev => ({ ...prev, [id]: { ...prev[id], status: "sent" } }));
 
+      // Mark as read and archive
+      await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}/modify`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${gmailToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ removeLabelIds: ["UNREAD", "INBOX"] }),
+      }).catch(() => {});
+
       // Save quote to history with Gmail thread info for follow-up tracking
       const q = gmailQuotesRef.current[id];
       if (q?.parsed && q?.rateResult?.base) {
