@@ -1168,7 +1168,13 @@ export default function App() {
     setLoading(true); setError(null);
     try {
       const raw_list   = await parseEmailWithClaude(email);
-      const parsed_list = raw_list.map(normalizeShipment);
+      const parsed_list = raw_list.map(normalizeShipment).filter(s => s.email_type === "quote_request" || s.dest_city || s.skids || s.weight_lbs || s.footage);
+      if (!parsed_list.length) {
+        const emailType = raw_list[0]?.email_type || "unknown";
+        const typeLabels = { tracking:"a tracking request", check_in:"a check-in", invoice:"an invoice", spam:"spam", booking:"a booking confirmation", other:"a non-quote email" };
+        setError(`This looks like ${typeLabels[emailType] || "a non-quote email"} — no shipment details were found to rate. Paste a quote request email with a destination and quantity.`);
+        return;
+      }
       setShipments(parsed_list);
       setActiveIdx(0);
       const first = parsed_list[0];
