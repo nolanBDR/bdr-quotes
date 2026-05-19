@@ -2981,6 +2981,8 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
                               {q?.status === "quote_ready" && (
                                 <>
+                                  <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:16, alignItems:"start" }}>
+                                  <div>{/* Left: quote controls */}
                                   {/* Shipment summary bar */}
                                   <div style={{ display:"flex", gap:14, flexWrap:"wrap", padding:"10px 14px", background:C.navy, borderRadius:8, marginBottom:14 }}>
                                     <div>
@@ -3058,6 +3060,22 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                       Re-process
                                     </button>
                                   </div>
+                                  </div>{/* end left col */}
+
+                                  {/* Right: original email body */}
+                                  <div style={{ borderLeft:`2px solid ${C.border}`, paddingLeft:14 }}>
+                                    <div style={{ fontSize:11, fontWeight:700, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:8 }}>Original Email</div>
+                                    <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>
+                                      <span style={{ fontWeight:600 }}>From:</span> {from}
+                                    </div>
+                                    <div style={{ fontSize:11, color:C.muted, marginBottom:10 }}>
+                                      <span style={{ fontWeight:600 }}>Subject:</span> {subject}
+                                    </div>
+                                    <pre style={{ fontSize:11, color:C.text, whiteSpace:"pre-wrap", wordBreak:"break-word", fontFamily:"inherit", lineHeight:1.6, maxHeight:420, overflowY:"auto", background:"#f8fafc", border:`1px solid ${C.border}`, borderRadius:6, padding:"10px 12px", margin:0 }}>
+                                      {getEmailBody(email.payload) || "(No text body found)"}
+                                    </pre>
+                                  </div>
+                                  </div>{/* end grid */}
                                 </>
                               )}
 
