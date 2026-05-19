@@ -380,7 +380,7 @@ EMAIL TYPE RULES:
 - invoice: billing, payment, invoice-related.
 - spam: promotional, newsletter, automated system email.
 - other: anything else.
-Only populate shipments[] for quote_request. Leave shipments:[] for all other types.
+ALWAYS populate shipments[] whenever any shipment details are present (destination, quantity, weight, dimensions, etc.), regardless of email type. Only leave shipments:[] for emails with absolutely no freight details (tracking only, invoice only, spam, check_in with no load info).
 
 ORIGIN RULES:
 - Default to "Ontario" unless pickup is clearly in Quebec.
