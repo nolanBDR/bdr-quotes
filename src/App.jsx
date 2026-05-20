@@ -355,9 +355,12 @@ function getRate(origin, rateCity, skids, weightLbs, lineItems, footage) {
   let basisLabel;
 
   if (useFootageBasis) {
-    // Footage provided (with or without skid count) and no dims → use footage
-    chargeIdx  = Math.max(footageIdx, weightIdx);
-    basisLabel = chargeIdx === weightIdx && weightIdx > footageIdx ? "weight" : "footage";
+    // Footage provided (no dims). If skid count also given, charge on whichever is higher.
+    const footageOrSkidIdx = hasSkids ? Math.max(footageIdx, skidIdx) : footageIdx;
+    chargeIdx  = Math.max(footageOrSkidIdx, weightIdx);
+    basisLabel = chargeIdx === weightIdx && weightIdx > footageOrSkidIdx ? "weight"
+               : hasSkids && skidIdx > footageIdx ? "skids"
+               : "footage";
   } else if (hasDimBasis) {
     chargeIdx  = Math.max(dimIdx, weightIdx);
     basisLabel = chargeIdx === weightIdx && weightIdx > dimIdx ? "weight" : "dimensions";
@@ -902,6 +905,7 @@ export default function App() {
   const [gmailQuotes,   setGmailQuotes]   = useState({});
   const [gmailFilter,   setGmailFilter]   = useState("all");
   const [gmailExpandedId, setGmailExpandedId] = useState(null);
+  const [gmailQuoteTabIdx, setGmailQuoteTabIdx] = useState({});  // {[emailId]: activeQuoteIndex}
   const [sendingIds,    setSendingIds]    = useState(new Set());
   const [scanningAll,   setScanningAll]   = useState(false);
   const gmailClientRef = useRef(null);
@@ -924,6 +928,7 @@ export default function App() {
   const historyRef  = useRef([]);
   const contactRef  = useRef("Nolan Giesbrecht");
   const phoneRef    = useRef("519-469-9361 ext 113");
+  const companyRef  = useRef("BDR International LTD");
   const gmailUserRef = useRef(null);
   const processGmailEmailRef = useRef(null);
   const fetchInboxRef = useRef(null);
@@ -944,6 +949,7 @@ export default function App() {
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { contactRef.current = contact; }, [contact]);
   useEffect(() => { phoneRef.current = phone; }, [phone]);
+  useEffect(() => { companyRef.current = company; }, [company]);
   useEffect(() => { gmailUserRef.current = gmailUser; }, [gmailUser]);
 
   // Load history from storage on mount
@@ -1465,52 +1471,80 @@ export default function App() {
       const first = parsed_list[0];
       const emailType = first?.email_type || "quote_request";
 
-      // Non-quote emails: classify, store, and move to BDR Non-Urgent label
+      // Non-quote emails: classify and store
       if (emailType !== "quote_request") {
         setGmailQuotes(prev => ({ ...prev, [id]: { status: "classified", email_type: emailType } }));
         return;
       }
-
       if (!first?.dest_city && !first?.skids && !first?.weight_lbs && !first?.footage) {
         setGmailQuotes(prev => ({ ...prev, [id]: { status: "not_quote" } })); return;
       }
-      const unservicedZone = isUnserviced(first.dest_city, first.dest_state, first.dest_lat, first.dest_lon);
-      if (unservicedZone) {
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "unserviced", city: first.dest_city, state: first.dest_state, zone: unservicedZone } })); return;
+
+      // ── Process ALL shipments from the email (multi-quote support) ──
+      const quotes = [];
+      let serviceableCount = 0;
+      for (let qi = 0; qi < parsed_list.length; qi++) {
+        const s = normalizeShipment(parsed_list[qi]);
+        if (!s.dest_city && !s.skids && !s.weight_lbs && !s.footage) continue;
+        const unservicedZone = isUnserviced(s.dest_city, s.dest_state, s.dest_lat, s.dest_lon);
+        if (unservicedZone) {
+          quotes.push({ parsed: s, rateCity: null, rateResult: null, quoteText: "", emailFsc: 0.18, emailAccs: {}, emailCustomAcc: "", unserviced: unservicedZone });
+          continue;
+        }
+        const dir = s.direction || "outbound";
+        const isInb = dir === "inbound";
+        let lat = isInb ? s.pickup_lat : s.dest_lat;
+        let lon = isInb ? s.pickup_lon : s.dest_lon;
+        if (!lat || !lon) {
+          const coords = await geocodeCity(isInb ? (s.pickup_location||s.origin) : s.dest_city, isInb ? null : s.dest_state);
+          if (coords) {
+            if (isInb) { s.pickup_lat = coords.lat; s.pickup_lon = coords.lon; }
+            else { s.dest_lat = coords.lat; s.dest_lon = coords.lon; }
+            lat = coords.lat; lon = coords.lon;
+          }
+        }
+        const rc = (lat && lon) ? findNearestRateCity(lat, lon, isInb ? s.pickup_location : s.dest_city) : null;
+        const origin = isInb ? (s.dest_state === "QC" ? "Quebec" : "Ontario") : s.origin;
+        const rr = rc ? getRate(origin, rc, s.skids, s.weight_lbs, s.line_items, s.footage, dir) : null;
+        const isFirstQuote = serviceableCount === 0;
+        // Build quote text inline (avoids stale closure — refs are always current)
+        let qt = "";
+        if (rr?.base) {
+          const fsc = 0.18;
+          const total = r5(rr.base * (1 + fsc));
+          const td = TRANSIT_TIMES[s.dest_state?.toUpperCase()];
+          qt = [
+            isFirstQuote ? `Hi ${s.broker_first_name || (s.broker_name||"").split(" ")[0] || "there"},` : null,
+            isFirstQuote ? "" : null,
+            isFirstQuote ? "Thank you for reaching out. Please find our rate below." : "Please see the additional quote below.",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "FREIGHT QUOTE", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            `Pickup:        ${s.pickup_location || s.origin}`,
+            `Destination:   ${s.dest_city}, ${s.dest_state}`,
+            `Skids:         ${s.skids}${rr.basisLabel==="weight"?` (charged at ${SKID_LABELS[rr.chargeIdx]} skids — weight basis)`:rr.basisLabel==="footage"&&!rr.footageOnly?` (rated on ${s.footage} ft customer footage)`:rr.basisLabel==="skids"?` (std 48×40")`:``}`,
+            s.weight_lbs ? `Weight:        ${Number(s.weight_lbs).toLocaleString()} lbs` : null,
+            s.commodity   ? `Commodity:     ${s.commodity}` : null,
+            s.pickup_date ? `Pickup Date:   ${s.pickup_date}` : null,
+            td ? `Transit Time:  Approx. ${td}` : null,
+            "", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            `TOTAL:         $${total} CAD`,
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            isFirstQuote ? ["", "Quote valid for 24 hours. Transit times subject to availability.", "", contactRef.current, companyRef.current, phoneRef.current].join("\n") : null,
+          ].filter(l => l !== null).join("\n");
+          if (!isFirstQuote) qt += ["", "", "Quote valid for 24 hours. Transit times subject to availability."].join("\n");
+        }
+        quotes.push({ parsed: s, rateCity: rc, rateResult: rr, quoteText: qt, emailFsc: 0.18, emailAccs: {}, emailCustomAcc: "" });
+        serviceableCount++;
       }
-      const dir = first.direction || "outbound";
-      const isInbound = dir === "inbound";
-      const lat = isInbound ? first.pickup_lat : first.dest_lat;
-      const lon = isInbound ? first.pickup_lon : first.dest_lon;
-      const rc  = (lat && lon) ? findNearestRateCity(lat, lon, isInbound ? first.pickup_location : first.dest_city) : null;
-      const origin = isInbound ? (first.dest_state === "QC" ? "Quebec" : "Ontario") : first.origin;
-      const rr  = rc ? getRate(origin, rc, first.skids, first.weight_lbs, first.line_items, first.footage, dir) : null;
-      let quoteText = "";
-      if (rr?.base) {
-        const total = r5(rr.base * 1.18);
-        const td = TRANSIT_TIMES[(isInbound ? null : first.dest_state)?.toUpperCase()];
-        quoteText = [
-          `Hi ${first.broker_first_name || (first.broker_name||"").split(" ")[0] || "there"},`,
-          "", "Thank you for reaching out. Please find our rate below.", "",
-          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-          "FREIGHT QUOTE",
-          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-          `Pickup:        ${first.pickup_location || first.origin}`,
-          `Destination:   ${first.dest_city}, ${first.dest_state}`,
-          `Skids:         ${first.skids}${rr.basisLabel==="weight"?` (charged at ${SKID_LABELS[rr.chargeIdx]} skids — weight basis)`:rr.basisLabel==="footage"&&!rr.footageOnly?` (rated on ${first.footage} ft customer footage)`:rr.basisLabel==="skids"?` (std 48×40")`:``}`,
-          first.weight_lbs ? `Weight:        ${Number(first.weight_lbs).toLocaleString()} lbs` : null,
-          first.commodity  ? `Commodity:     ${first.commodity}` : null,
-          first.pickup_date ? `Pickup Date:   ${first.pickup_date}` : null,
-          td ? `Transit Time:  Approx. ${td}` : null,
-          null,
-          "", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-          `TOTAL:         $${total} CAD`,
-          "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-          "", "Quote valid for 24 hours. Transit times subject to availability.", "",
-          "Nolan Giesbrecht", "BDR International Ltd.", "519-469-9361 ext 113",
-        ].filter(l => l !== null).join("\n");
+
+      if (quotes.length === 0) {
+        setGmailQuotes(prev => ({ ...prev, [id]: { status: "not_quote" } })); return;
       }
-      setGmailQuotes(prev => ({ ...prev, [id]: { status: "quote_ready", parsed: first, rateCity: rc, rateResult: rr, quoteText, emailFsc: 0.18, emailAccs: {}, emailCustomAcc: "" } }));
+      if (quotes.length === 1 && quotes[0].unserviced) {
+        const uq = quotes[0];
+        setGmailQuotes(prev => ({ ...prev, [id]: { status: "unserviced", city: uq.parsed.dest_city, state: uq.parsed.dest_state, zone: uq.unserviced } })); return;
+      }
+      setGmailQuotes(prev => ({ ...prev, [id]: { status: "quote_ready", quotes } }));
     } catch(e) {
       setGmailQuotes(prev => ({ ...prev, [id]: { status: "error", error: e.message } }));
     }
@@ -1640,15 +1674,22 @@ export default function App() {
         body: JSON.stringify({ removeLabelIds: ["UNREAD", "INBOX"] }),
       }).catch(() => {});
 
-      // Save quote to history with Gmail thread info for follow-up tracking
-      const q = gmailQuotesRef.current[id];
-      if (q?.parsed && q?.rateResult?.base) {
-        const p   = q.parsed;
-        const rr  = q.rateResult;
-        const rc  = q.rateCity;
-        const now = Date.now();
-        // Extract raw email address from "Name <addr>" format
-        const brokerEmail = (from.match(/<(.+?)>/) || [])[1] || from;
+      // Save each quoted shipment to history
+      const qEntry = gmailQuotesRef.current[id];
+      const quotesToSave = qEntry?.quotes || (qEntry?.parsed ? [{ parsed: qEntry.parsed, rateCity: qEntry.rateCity, rateResult: qEntry.rateResult, emailFsc: qEntry.emailFsc??0.18, emailAccs: qEntry.emailAccs||{}, emailCustomAcc: qEntry.emailCustomAcc||"" }] : []);
+      const brokerEmail = (from.match(/<(.+?)>/) || [])[1] || from;
+      for (let qi = 0; qi < quotesToSave.length; qi++) {
+        const qItem = quotesToSave[qi];
+        if (!qItem?.parsed || !qItem?.rateResult?.base || qItem.unserviced) continue;
+        const p  = qItem.parsed;
+        const rr = qItem.rateResult;
+        const rc = qItem.rateCity;
+        const now = Date.now() + qi; // offset to ensure unique timestamps
+        const fscV = qItem.emailFsc ?? 0.18;
+        const accs = qItem.emailAccs || {};
+        const sub  = r5(rr.base * (1 + fscV));
+        const fl   = accs["fl"] ? r5(sub * 1.10) : sub;
+        const fixed = (accs["da"]?75:0)+(accs["lg"]?75:0)+(accs["nc"]?150:0)+(accs["st"]?100:0)+(parseFloat(qItem.emailCustomAcc||"")||0);
         await saveQuote({
           timestamp: now,
           date: new Date().toLocaleDateString("en-CA"),
@@ -1657,17 +1698,9 @@ export default function App() {
           origin: p.origin || p.pickup_location || "",
           dest_city: p.dest_city || "", dest_state: p.dest_state || "",
           skids: p.skids, weight_lbs: p.weight_lbs,
-          base_rate: rr.base, fsc: q.emailFsc ?? 0.18, total: (() => {
-            const fscV = q.emailFsc ?? 0.18;
-            const accs = q.emailAccs || {};
-            const sub  = r5(rr.base * (1 + fscV));
-            const fl   = accs["fl"] ? r5(sub * 1.10) : sub;
-            const fixed = (accs["da"]?75:0)+(accs["lg"]?75:0)+(accs["nc"]?150:0)+(accs["st"]?100:0)+(parseFloat(q.emailCustomAcc||"")||0);
-            return r5(fl + fixed);
-          })(),
+          base_rate: rr.base, fsc: fscV, total: r5(fl + fixed),
           rate_city: rc?.city, basis_label: rr.basisLabel, charge_skids: SKID_LABELS[rr.chargeIdx],
-          quote_text: quoteText,
-          // Gmail tracking fields
+          quote_text: qItem.quoteText || quoteText,
           broker_email: brokerEmail,
           thread_id: email.threadId,
           email_subject: subject,
@@ -1778,12 +1811,21 @@ export default function App() {
     finally { setSendingIds(prev => { const s = new Set(prev); s.delete(id); return s; }); }
   }, [gmailToken]);
 
-  const updateGmailQuoteSettings = (emailId, newFsc, newAccs, newCustomAcc) => {
-    const q = gmailQuotes[emailId];
-    if (!q?.parsed || !q?.rateResult?.base) return;
-    const qt = buildQuoteText(q.parsed, q.rateCity, q.rateResult, newFsc, newAccs, newCustomAcc, contact, company, phone);
+  const updateGmailQuoteSettings = (emailId, quoteIdx, newFsc, newAccs, newCustomAcc) => {
+    const entry = gmailQuotes[emailId];
+    // Normalise: support both new quotes[] structure and legacy flat structure
+    const quotesArr = entry?.quotes || (entry?.parsed ? [{ parsed: entry.parsed, rateCity: entry.rateCity, rateResult: entry.rateResult, quoteText: entry.quoteText||"", emailFsc: entry.emailFsc??0.18, emailAccs: entry.emailAccs||{}, emailCustomAcc: entry.emailCustomAcc||"" }] : []);
+    const qItem = quotesArr[quoteIdx];
+    if (!qItem?.parsed || !qItem?.rateResult?.base) return;
+    const serviceableArr = quotesArr.filter(x => !x.unserviced);
+    const isFirst = serviceableArr.length === 0 || serviceableArr[0] === qItem;
+    const qt = buildQuoteText(qItem.parsed, qItem.rateCity, qItem.rateResult, newFsc, newAccs, newCustomAcc, contact, company, phone, isFirst);
+    const updatedQuotes = quotesArr.map((item, i) => i === quoteIdx ? { ...item, emailFsc: newFsc, emailAccs: newAccs, emailCustomAcc: newCustomAcc, quoteText: qt } : item);
     setGmailQuotes(prev => ({
-      ...prev, [emailId]: { ...prev[emailId], emailFsc: newFsc, emailAccs: newAccs, emailCustomAcc: newCustomAcc, quoteText: qt }
+      ...prev,
+      [emailId]: entry?.quotes
+        ? { ...prev[emailId], quotes: updatedQuotes }
+        : { ...prev[emailId], ...updatedQuotes[0], quotes: updatedQuotes },
     }));
   };
 
@@ -3030,15 +3072,19 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                           <span style={{ fontSize:11, fontWeight:600, color:C.subtle, padding:"1px 7px", background:"#f1f5f9", borderRadius:10 }}>✗ Declined</span>
                         </div>
                       );
-                      const fscVal   = q?.emailFsc ?? 0.18;
-                      const accsVal  = q?.emailAccs || {};
-                      const customAccVal = q?.emailCustomAcc || "";
-                      const floorloaded = !!accsVal["fl"];
-                      const calcSubtotal = q?.rateResult?.base ? r5(q.rateResult.base * (1 + fscVal)) : null;
+                      // Normalize to quotes[] array — supports old flat structure and new multi-quote
+                      const quotesArr = q?.quotes || (q?.parsed ? [{ parsed: q.parsed, rateCity: q.rateCity, rateResult: q.rateResult, quoteText: q.quoteText||"", emailFsc: q.emailFsc??0.18, emailAccs: q.emailAccs||{}, emailCustomAcc: q.emailCustomAcc||"" }] : []);
+                      const activeQIdx   = gmailQuoteTabIdx[email.id] ?? 0;
+                      const activeQ      = quotesArr[Math.min(activeQIdx, Math.max(quotesArr.length - 1, 0))] || null;
+                      const fscVal       = activeQ?.emailFsc ?? 0.18;
+                      const accsVal      = activeQ?.emailAccs || {};
+                      const customAccVal = activeQ?.emailCustomAcc || "";
+                      const floorloaded  = !!accsVal["fl"];
+                      const calcSubtotal = activeQ?.rateResult?.base ? r5(activeQ.rateResult.base * (1 + fscVal)) : null;
                       const afterFloor   = calcSubtotal ? (floorloaded ? r5(calcSubtotal * 1.10) : calcSubtotal) : null;
                       const fixedAccs    = (accsVal["da"] ? 75 : 0) + (accsVal["lg"] ? 75 : 0) + (accsVal["nc"] ? 150 : 0) + (accsVal["st"] ? 100 : 0) + (parseFloat(customAccVal) || 0);
                       const calcTotal    = afterFloor ? r5(afterFloor + fixedAccs) : null;
-                      const accList  = ACC_OPTS.filter(a => accsVal[a.id] && a.id !== "fl");
+                      const accList      = ACC_OPTS.filter(a => accsVal[a.id] && a.id !== "fl");
 
                       return (
                         <div key={email.id} style={{ ...card, padding:0, overflow:"hidden", marginBottom:10,
@@ -3051,15 +3097,17 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                               <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2, flexWrap:"wrap" }}>
                                 <span style={{ fontSize:13, fontWeight:isUnread?700:500, color:C.navy, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{fromName}</span>
                                 {q?.status === "processing" && <span style={{ fontSize:11, fontWeight:600, color:"#f59e0b", padding:"1px 7px", background:"#fffbeb", borderRadius:10 }}>Processing…</span>}
-                                {q?.status === "quote_ready" && <span style={{ fontSize:11, fontWeight:600, color:C.green, padding:"1px 7px", background:"#f0fdf4", borderRadius:10 }}>Quote Ready</span>}
+                                {q?.status === "quote_ready" && <span style={{ fontSize:11, fontWeight:600, color:C.green, padding:"1px 7px", background:"#f0fdf4", borderRadius:10 }}>{quotesArr.length > 1 ? `${quotesArr.length} Quotes Ready` : "Quote Ready"}</span>}
                                 {q?.status === "unserviced" && <span style={{ fontSize:11, fontWeight:600, color:C.amber, padding:"1px 7px", background:"#fffbeb", borderRadius:10 }}>No Service</span>}
                               </div>
                               <div style={{ fontSize:11, color:C.muted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                                 {subject} · {new Date(date).toLocaleDateString("en-CA",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
                               </div>
-                              {q?.status === "quote_ready" && calcTotal && !expanded && (
+                              {q?.status === "quote_ready" && !expanded && (
                                 <div style={{ fontSize:12, color:C.green, fontWeight:700, marginTop:2 }}>
-                                  {q.parsed?.origin||q.parsed?.pickup_location} → {q.parsed?.dest_city}, {q.parsed?.dest_state} · {q.parsed?.skids} skids · <span style={{ color:C.amber }}>${calcTotal}</span>
+                                  {quotesArr.length > 1
+                                    ? quotesArr.filter(x=>!x.unserviced).map((x,i) => `${x.parsed?.dest_city||"?"}${x.parsed?.dest_state?", "+x.parsed.dest_state:""}`).join(" · ")
+                                    : `${activeQ?.parsed?.origin||activeQ?.parsed?.pickup_location} → ${activeQ?.parsed?.dest_city}, ${activeQ?.parsed?.dest_state} · ${activeQ?.parsed?.skids} skids${calcTotal?" · $"+calcTotal:""}`}
                                 </div>
                               )}
                             </div>
@@ -3082,25 +3130,49 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
                               {q?.status === "quote_ready" && (
                                 <>
+                                  {/* Quote tabs — only shown when multiple shipments */}
+                                  {quotesArr.length > 1 && (
+                                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:14 }}>
+                                      {quotesArr.map((qItem, idx) => (
+                                        <button key={idx}
+                                          onClick={() => setGmailQuoteTabIdx(prev => ({ ...prev, [email.id]: idx }))}
+                                          style={{ padding:"6px 14px", fontSize:12, fontWeight:activeQIdx===idx?700:400, borderRadius:6, cursor:"pointer",
+                                            background: activeQIdx===idx ? C.navy : "#f1f5f9",
+                                            color: activeQIdx===idx ? "#fff" : C.text,
+                                            border: `1.5px solid ${activeQIdx===idx ? C.navy : C.border}` }}>
+                                          Quote {idx+1}: {qItem.parsed?.dest_city||"?"}{qItem.parsed?.dest_state?`, ${qItem.parsed.dest_state}`:""}
+                                          {qItem.unserviced && <span style={{ color:"#f59e0b", marginLeft:4 }}>⚠</span>}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {activeQ?.unserviced && (
+                                    <div style={{ padding:"10px 14px", background:"#fffbeb", borderRadius:8, color:"#92400e", fontSize:13, marginBottom:12 }}>
+                                      ⚠ We don't service this area (near {activeQ.unserviced}). No rate available for this shipment.
+                                    </div>
+                                  )}
+
+                                  {!activeQ?.unserviced && (
                                   <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:16, alignItems:"start" }}>
                                   <div>{/* Left: quote controls */}
                                   {/* Shipment summary bar */}
                                   <div style={{ display:"flex", gap:14, flexWrap:"wrap", padding:"10px 14px", background:C.navy, borderRadius:8, marginBottom:14 }}>
                                     <div>
                                       <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Lane</div>
-                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{q.parsed?.pickup_location||q.parsed?.origin} → {q.parsed?.dest_city}, {q.parsed?.dest_state}</div>
+                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{activeQ?.parsed?.pickup_location||activeQ?.parsed?.origin} → {activeQ?.parsed?.dest_city}, {activeQ?.parsed?.dest_state}</div>
                                     </div>
                                     <div>
                                       <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Skids</div>
-                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{q.parsed?.skids||"—"}</div>
+                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{activeQ?.parsed?.skids||"—"}</div>
                                     </div>
-                                    {q.parsed?.weight_lbs && <div>
+                                    {activeQ?.parsed?.weight_lbs && <div>
                                       <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Weight</div>
-                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{Number(q.parsed.weight_lbs).toLocaleString()} lbs</div>
+                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{Number(activeQ.parsed.weight_lbs).toLocaleString()} lbs</div>
                                     </div>}
                                     <div>
                                       <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Base Rate</div>
-                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>${r5(q.rateResult.base)}</div>
+                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>${r5(activeQ?.rateResult?.base||0)}</div>
                                     </div>
                                     {calcTotal && <div>
                                       <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Total ({(fscVal*100).toFixed(0)}% FSC{floorloaded?" +floor":""}) </div>
@@ -3113,7 +3185,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                     <div style={{ fontSize:11, fontWeight:700, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>Fuel Surcharge (FSC)</div>
                                     <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
                                       {FSC_OPTS.map(o => (
-                                        <button key={o.v} onClick={()=>updateGmailQuoteSettings(email.id, o.v, accsVal, customAccVal)}
+                                        <button key={o.v} onClick={()=>updateGmailQuoteSettings(email.id, activeQIdx, o.v, accsVal, customAccVal)}
                                           style={{ padding:"6px 12px", fontSize:12, fontWeight:fscVal===o.v?700:400, borderRadius:6, cursor:"pointer",
                                             background:fscVal===o.v?C.navy:"#f1f5f9", color:fscVal===o.v?"#fff":C.text, border:`1.5px solid ${fscVal===o.v?C.navy:C.border}` }}>
                                           {o.l}
@@ -3127,7 +3199,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                     <div style={{ fontSize:11, fontWeight:700, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>Accessorials</div>
                                     <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
                                       {ACC_OPTS.map(a => (
-                                        <button key={a.id} onClick={()=>updateGmailQuoteSettings(email.id, fscVal, {...accsVal,[a.id]:!accsVal[a.id]}, customAccVal)}
+                                        <button key={a.id} onClick={()=>updateGmailQuoteSettings(email.id, activeQIdx, fscVal, {...accsVal,[a.id]:!accsVal[a.id]}, customAccVal)}
                                           style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", fontWeight:accsVal[a.id]?600:400,
                                             background:accsVal[a.id]?"#eff6ff":"#f1f5f9", color:accsVal[a.id]?"#1d4ed8":C.text, border:`1.5px solid ${accsVal[a.id]?"#93c5fd":C.border}` }}>
                                           {a.l} <span style={{ opacity:0.6, fontSize:11 }}>({a.n})</span>
@@ -3135,23 +3207,47 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                       ))}
                                     </div>
                                     <input value={customAccVal}
-                                      onChange={e=>updateGmailQuoteSettings(email.id, fscVal, accsVal, e.target.value)}
+                                      onChange={e=>updateGmailQuoteSettings(email.id, activeQIdx, fscVal, accsVal, e.target.value)}
                                       placeholder="Custom accessorial charge…"
                                       style={{ ...input, marginTop:6, fontSize:12 }}/>
                                   </div>
 
                                   {/* Editable quote text */}
                                   <textarea
-                                    value={q.quoteText}
-                                    onChange={e => setGmailQuotes(prev=>({...prev,[email.id]:{...prev[email.id],quoteText:e.target.value}}))}
+                                    value={activeQ?.quoteText||""}
+                                    onChange={e => {
+                                      const newText = e.target.value;
+                                      setGmailQuotes(prev => {
+                                        const entry = prev[email.id];
+                                        const qArr = entry?.quotes || (entry?.parsed ? [{ parsed: entry.parsed, rateCity: entry.rateCity, rateResult: entry.rateResult, quoteText: entry.quoteText||"", emailFsc: entry.emailFsc??0.18, emailAccs: entry.emailAccs||{}, emailCustomAcc: entry.emailCustomAcc||"" }] : []);
+                                        const updated = qArr.map((item,i) => i===activeQIdx ? {...item, quoteText: newText} : item);
+                                        return { ...prev, [email.id]: entry?.quotes ? { ...entry, quotes: updated } : { ...entry, quoteText: newText, quotes: updated } };
+                                      });
+                                    }}
                                     style={{ ...input, height:200, resize:"vertical", fontFamily:"'Courier New',monospace", fontSize:12, lineHeight:1.7, background:"#fff" }}
                                   />
 
                                   <div style={{ display:"flex", gap:8, marginTop:10, flexWrap:"wrap" }}>
-                                    <button onClick={()=>sendGmailReply(email, q.quoteText)} disabled={isSending||!q.quoteText}
-                                      style={{ padding:"10px 24px", background:isSending?"#94a3b8":C.green, color:"#fff", border:"none", borderRadius:7, fontSize:14, fontWeight:700, cursor:isSending?"not-allowed":"pointer" }}>
-                                      {isSending ? "Sending…" : "Send Reply"}
-                                    </button>
+                                    {quotesArr.length > 1 ? (
+                                      <>
+                                        <button onClick={()=>{
+                                          const combined = quotesArr.filter(x=>!x.unserviced&&x.quoteText).map(x=>x.quoteText).join("\n\n──────────────────────────────────\n\n");
+                                          sendGmailReply(email, combined);
+                                        }} disabled={isSending||!quotesArr.some(x=>x.quoteText)}
+                                          style={{ padding:"10px 24px", background:isSending?"#94a3b8":C.green, color:"#fff", border:"none", borderRadius:7, fontSize:14, fontWeight:700, cursor:isSending?"not-allowed":"pointer" }}>
+                                          {isSending ? "Sending…" : `Send All ${quotesArr.filter(x=>!x.unserviced).length} Quotes`}
+                                        </button>
+                                        <button onClick={()=>sendGmailReply(email, activeQ?.quoteText||"")} disabled={isSending||!activeQ?.quoteText}
+                                          style={{ padding:"10px 18px", background:isSending?"#94a3b8":"#1d4ed8", color:"#fff", border:"none", borderRadius:7, fontSize:13, fontWeight:600, cursor:isSending?"not-allowed":"pointer" }}>
+                                          Send Quote {activeQIdx+1} Only
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button onClick={()=>sendGmailReply(email, activeQ?.quoteText||"")} disabled={isSending||!activeQ?.quoteText}
+                                        style={{ padding:"10px 24px", background:isSending?"#94a3b8":C.green, color:"#fff", border:"none", borderRadius:7, fontSize:14, fontWeight:700, cursor:isSending?"not-allowed":"pointer" }}>
+                                        {isSending ? "Sending…" : "Send Reply"}
+                                      </button>
+                                    )}
                                     <button onClick={()=>sendDeclineReply(email)} disabled={isSending}
                                       style={{ padding:"10px 18px", background:"#fff", color:C.error, border:`1.5px solid #fca5a5`, borderRadius:7, fontSize:13, fontWeight:600, cursor:isSending?"not-allowed":"pointer" }}>
                                       ✗ Decline
@@ -3176,7 +3272,8 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                       {getEmailBody(email.payload) || "(No text body found)"}
                                     </pre>
                                   </div>
-                                  </div>{/* end grid */}
+                                  </div>
+                                  )}
                                 </>
                               )}
 
