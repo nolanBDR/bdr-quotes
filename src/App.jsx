@@ -373,7 +373,8 @@ function getRate(origin, rateCity, skids, weightLbs, lineItems, footage) {
   return { base: table[chargeIdx], table, key, orig, chargeIdx, skidIdx, weightIdx, dimIdx, footageIdx, basisLabel, dimBasis, footageOnly, useFootageBasis };
 }
 
-// ── API queue — max 1 concurrent Anthropic call, 500ms between calls ──────
+// ── API queue — max 2 concurrent Anthropic calls, 300ms between slots ─────
+// Geocoding uses OSM Nominatim (not Claude) so doesn't consume slots here.
 let _claudeActive = 0;
 const _claudeQueue = [];
 function claudeFetch(bodyObj) {
@@ -383,7 +384,7 @@ function claudeFetch(bodyObj) {
   });
 }
 async function _drainClaudeQueue() {
-  if (_claudeActive >= 1 || _claudeQueue.length === 0) return;
+  if (_claudeActive >= 2 || _claudeQueue.length === 0) return;
   _claudeActive++;
   const { bodyObj, resolve, reject } = _claudeQueue.shift();
   try {
@@ -396,7 +397,7 @@ async function _drainClaudeQueue() {
   } catch(e) { reject(e); }
   finally {
     _claudeActive--;
-    setTimeout(_drainClaudeQueue, 500); // 500ms gap between calls
+    setTimeout(_drainClaudeQueue, 300); // 300ms gap before next slot opens
   }
 }
 
@@ -580,7 +581,14 @@ RULES:
   throw new Error("API overloaded after 3 attempts.");
 }
 
-async function parsePDFWithClaude(base64Data) {
+async function parsePDFWithClaude(base64Data, cacheKey) {
+  // Cache by attachment content hash (first 64 chars of base64 is a good proxy)
+  const ck = cacheKey || `bdr_pdf:${(base64Data||"").slice(0, 64)}`;
+  try {
+    const hit = localStorage.getItem(ck);
+    if (hit) return JSON.parse(hit);
+  } catch(e) {}
+
   const SYSTEM = `You are a parser for a Canadian LTL freight carrier (GTA/Montreal pickup). Extract all shipment data from this PDF document. Return ONLY valid JSON with no markdown or extra text.
 
 SCHEMA:
@@ -639,21 +647,34 @@ RULES:
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No JSON in PDF response.");
     const parsed = JSON.parse(cleanJson(jsonMatch[0]));
-    return parsed.shipments ? parsed : {shipments:[parsed], broker_name:parsed.broker_name, broker_company:parsed.broker_company};
+    const result = parsed.shipments ? parsed : {shipments:[parsed], broker_name:parsed.broker_name, broker_company:parsed.broker_company};
+    try { localStorage.setItem(ck, JSON.stringify(result)); } catch(e) {}
+    return result;
   }
   throw new Error("API overloaded after 3 attempts.");
 }
 
+// ── Geocode via OSM Nominatim (free, no key, no Claude quota) ─────────────
+// Results cached in localStorage forever — same city is never looked up twice.
 async function geocodeCity(city, state) {
-  const res = await claudeFetch({
-    model:"claude-haiku-4-5-20251001", max_tokens:60,
-    system:`Return ONLY {"lat":number,"lon":number} for the city. No markdown.`,
-    messages:[{role:"user",content:`Coordinates for ${city}${state?", "+state:""}, USA`}],
-  });
-  const data = await res.json();
-  const raw = data.content.map(b=>b.text||"").join("");
-  const m = raw.match(/\{[\s\S]*\}/);
-  return m ? JSON.parse(m[0]) : null;
+  if (!city) return null;
+  const cacheKey = `bdr_geo:${(city + (state||"")).toLowerCase().replace(/\s+/g,"")}`;
+  try {
+    const hit = localStorage.getItem(cacheKey);
+    if (hit) return JSON.parse(hit);
+  } catch(e) {}
+  try {
+    const q = encodeURIComponent(`${city}${state ? ", " + state : ""}, USA`);
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1&countrycodes=us,ca`,
+      { headers: { "Accept-Language": "en", "User-Agent": "BDR-Quotes/1.0" } }
+    );
+    const data = await res.json();
+    if (!data[0]) return null;
+    const result = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+    try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch(e) {}
+    return result;
+  } catch(e) { return null; }
 }
 
 const TRANSIT_TIMES = {
@@ -1359,7 +1380,7 @@ export default function App() {
         } else if (pdfPart?.body?.data) {
           pdfBase64 = pdfPart.body.data.replace(/-/g, "+").replace(/_/g, "/");
         }
-        const pdfResult = pdfBase64 ? await parsePDFWithClaude(pdfBase64) : null;
+        const pdfResult = pdfBase64 ? await parsePDFWithClaude(pdfBase64, pdfPart?.body?.attachmentId ? `bdr_pdf:${pdfPart.body.attachmentId}` : undefined) : null;
         const parsed = pdfResult?.shipments?.[0] || pdfResult || {};
         const norm = normalizeShipment(parsed);
         const coords = (!norm.dest_lat && norm.dest_city) ? await geocodeCity(norm.dest_city, norm.dest_state) : null;
@@ -1428,7 +1449,7 @@ export default function App() {
           let parsed;
           if (pdfPart?.body?.attachmentId && gmailTokenRef.current) {
             const pdfBase64 = await fetchGmailPdfBase64(gmailTokenRef.current, id, pdfPart.body.attachmentId);
-            const pdfResult = await parsePDFWithClaude(pdfBase64);
+            const pdfResult = await parsePDFWithClaude(pdfBase64, `bdr_pdf:${pdfPart.body.attachmentId}`);
             parsed = pdfResult.shipments?.[0] || pdfResult;
             if (!parsed.broker_name) parsed.broker_name = pdfResult.broker_name || from.replace(/<.*>/, "").trim();
             if (!parsed.broker_company) parsed.broker_company = pdfResult.broker_company || "";
@@ -1584,7 +1605,7 @@ export default function App() {
         return;
       }
       console.log("[PDF] sending to Claude, base64 length:", pdfBase64?.length);
-      const result = await parsePDFWithClaude(pdfBase64);
+      const result = await parsePDFWithClaude(pdfBase64, pdfPart.body?.attachmentId ? `bdr_pdf:${pdfPart.body.attachmentId}` : undefined);
       console.log("[PDF] Claude result:", JSON.stringify(result).slice(0, 300));
       const parsed = result.shipments?.[0] || result;
       if (!parsed.broker_name) parsed.broker_name = result.broker_name;
