@@ -373,12 +373,37 @@ function getRate(origin, rateCity, skids, weightLbs, lineItems, footage) {
   return { base: table[chargeIdx], table, key, orig, chargeIdx, skidIdx, weightIdx, dimIdx, footageIdx, basisLabel, dimBasis, footageOnly, useFootageBasis };
 }
 
+// ── API queue — max 1 concurrent Anthropic call, 500ms between calls ──────
+let _claudeActive = 0;
+const _claudeQueue = [];
+function claudeFetch(bodyObj) {
+  return new Promise((resolve, reject) => {
+    _claudeQueue.push({ bodyObj, resolve, reject });
+    _drainClaudeQueue();
+  });
+}
+async function _drainClaudeQueue() {
+  if (_claudeActive >= 1 || _claudeQueue.length === 0) return;
+  _claudeActive++;
+  const { bodyObj, resolve, reject } = _claudeQueue.shift();
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(ANTHROPIC_KEY ? { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" } : {}) },
+      body: JSON.stringify(bodyObj),
+    });
+    resolve(r);
+  } catch(e) { reject(e); }
+  finally {
+    _claudeActive--;
+    setTimeout(_drainClaudeQueue, 500); // 500ms gap between calls
+  }
+}
+
 async function parseEmailWithClaude(text) {
   let res, attempts = 0;
   while (attempts < 3) {
-    res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{"Content-Type":"application/json",...(ANTHROPIC_KEY ? {"x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"} : {})},
-    body: JSON.stringify({
+    res = await claudeFetch({
       model:"claude-haiku-4-5-20251001", max_tokens:4096,
       system:`You are a parser for a Canadian LTL freight carrier (GTA/Montreal pickup). Classify the email then extract all shipment data. Return ONLY valid JSON with no markdown or extra text.
 
@@ -475,8 +500,7 @@ MULTIPLE SHIPMENTS:
 
 COORDINATES: Always include accurate lat/lon for both pickup and destination. Use your knowledge of city coordinates.`,
       messages:[{role:"user",content:`Parse this:\n\n${text}`}],
-    }),
-  });
+    });
   if (res.status === 529 || res.status === 503 || res.status === 429) {
     attempts++;
     await new Promise(r => setTimeout(r, 3000 * attempts));
@@ -512,9 +536,7 @@ COORDINATES: Always include accurate lat/lon for both pickup and destination. Us
 async function parseLoadSheetWithClaude(text) {
   let res, attempts = 0;
   while (attempts < 3) {
-    res = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST", headers:{"Content-Type":"application/json",...(ANTHROPIC_KEY ? {"x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"} : {})},
-      body: JSON.stringify({
+    res = await claudeFetch({
         model:"claude-haiku-4-5-20251001", max_tokens:1024,
         system:`You are a parser for a Canadian LTL freight carrier. Extract shipment details from a load sheet / order confirmation / rate confirmation / dispatch email. Return ONLY valid JSON with no markdown.
 
@@ -546,8 +568,7 @@ RULES:
 - Pieces/pallets/skids/units/PLT all count as skids.
 - freight_charge: total freight amount in CAD if stated on the document, else null.`,
         messages:[{role:"user",content:`Parse this load sheet:\n\n${text}`}],
-      }),
-    });
+      });
     if (res.status === 529 || res.status === 503 || res.status === 429) { attempts++; await new Promise(r => setTimeout(r, 3000 * attempts)); continue; }
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error?.message || `API error ${res.status}`);
@@ -603,18 +624,14 @@ RULES:
 
   let attempts = 0;
   while (attempts < 3) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST",
-      headers:{"Content-Type":"application/json",...(ANTHROPIC_KEY?{"x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"}:{})},
-      body: JSON.stringify({
+    const res = await claudeFetch({
         model:"claude-sonnet-4-6", max_tokens:4096,
         system: SYSTEM,
         messages:[{role:"user",content:[
           {type:"document",source:{type:"base64",media_type:"application/pdf",data:base64Data}},
           {type:"text",text:"Extract all shipment information from this PDF document."}
         ]}],
-      }),
-    });
+      });
     if (res.status===529||res.status===503||res.status===429){attempts++;await new Promise(r=>setTimeout(r,3000*attempts));continue;}
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error?.message||`API error ${res.status}`);
@@ -628,13 +645,10 @@ RULES:
 }
 
 async function geocodeCity(city, state) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{"Content-Type":"application/json",...(ANTHROPIC_KEY ? {"x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"} : {})},
-    body: JSON.stringify({
-      model:"claude-haiku-4-5-20251001", max_tokens:60,
-      system:`Return ONLY {"lat":number,"lon":number} for the city. No markdown.`,
-      messages:[{role:"user",content:`Coordinates for ${city}${state?", "+state:""}, USA`}],
-    }),
+  const res = await claudeFetch({
+    model:"claude-haiku-4-5-20251001", max_tokens:60,
+    system:`Return ONLY {"lat":number,"lon":number} for the city. No markdown.`,
+    messages:[{role:"user",content:`Coordinates for ${city}${state?", "+state:""}, USA`}],
   });
   const data = await res.json();
   const raw = data.content.map(b=>b.text||"").join("");
@@ -1833,15 +1847,11 @@ export default function App() {
 
   const classifyBrokerReply = async (replyText) => {
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({
+      const res = await claudeFetch({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 80,
           messages: [{ role: "user", content: `Classify this freight broker reply into exactly one of these JSON responses:\n{"type":"yes_sending"} — they confirm the load, send BOL, or ask for more time\n{"type":"no_not_coming"} — cancelled, not available, not going through\n{"type":"counter","amount":NUMBER} — they propose a different price (extract the dollar amount as a number, no $ sign)\n{"type":"unclear"}\n\nReply with ONLY valid JSON, nothing else.\n\nReply text: ${replyText.slice(0, 800)}` }]
-        })
-      });
+        });
       const data = await res.json();
       const raw = (data.content?.[0]?.text || "").trim();
       try { return JSON.parse(raw); } catch { return { type: raw.toLowerCase() }; }
@@ -1984,10 +1994,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [gmailToken, sendFollowUpEmail, checkThreadForReplies]);
 
-  // Auto-refresh inbox every 10 seconds while connected
+  // Auto-refresh inbox every 60 seconds (10s was firing too many API calls)
   useEffect(() => {
     if (!gmailToken) return;
-    const interval = setInterval(() => fetchInbox(gmailToken), 10000);
+    const interval = setInterval(() => fetchInbox(gmailToken), 60000);
     return () => clearInterval(interval);
   }, [gmailToken, fetchInbox]);
 
@@ -2183,11 +2193,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
     ];
 
     const apiCall = async (msgs) => {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true" },
-        body: JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:1024, system:systemPrompt, tools:TOOLS, messages:msgs }),
-      });
+      const res = await claudeFetch({ model:"claude-sonnet-4-6", max_tokens:1024, system:systemPrompt, tools:TOOLS, messages:msgs });
       return res.json();
     };
 
