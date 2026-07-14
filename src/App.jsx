@@ -397,7 +397,7 @@ async function _drainClaudeQueue() {
   } catch(e) { reject(e); }
   finally {
     _claudeActive--;
-    setTimeout(_drainClaudeQueue, 300); // 300ms gap before next slot opens
+    setTimeout(_drainClaudeQueue, 800); // 800ms gap before next slot opens
   }
 }
 
@@ -405,7 +405,7 @@ async function parseEmailWithClaude(text) {
   let res, attempts = 0;
   while (attempts < 3) {
     res = await claudeFetch({
-      model:"claude-haiku-4-5-20251001", max_tokens:4096,
+      model:"claude-haiku-4-5-20251001", max_tokens:1500,
       system:`You are a parser for a Canadian LTL freight carrier (GTA/Montreal pickup). Classify the email then extract all shipment data. Return ONLY valid JSON with no markdown or extra text.
 
 SCHEMA:
@@ -504,7 +504,7 @@ COORDINATES: Always include accurate lat/lon for both pickup and destination. Us
     });
   if (res.status === 529 || res.status === 503 || res.status === 429) {
     attempts++;
-    await new Promise(r => setTimeout(r, 3000 * attempts));
+    await new Promise(r => setTimeout(r, 8000 * attempts)); // 8s, 16s, 24s backoff
     continue;
   }
   const data = await res.json();
@@ -733,26 +733,28 @@ function cleanJson(str) {
 const FSC_OPTS = [{v:0,l:"None"},{v:0.08,l:"8%"},{v:0.15,l:"15%"},{v:0.18,l:"18%"},{v:0.20,l:"20%"},{v:0.30,l:"30%"},{v:0.40,l:"40%"}];
 const ACC_OPTS = [{id:"da",l:"Driver Assist",n:"from $75"},{id:"lg",l:"Liftgate",n:"from $75"},{id:"nc",l:"No Crossdock",n:"from $150"},{id:"fl",l:"Floorload",n:"+10% markup"},{id:"st",l:"Straight Truck",n:"$100"}];
 
-// ── Design tokens — BDR International branding ────────────────
+// ── Design tokens — BDR International branding (colours pulled from bdrint.ca) ──
 const C = {
-  bg: "#f4f4f4",
+  bg: "#F2EFE9",          // BDR cream section background
   card: "#ffffff",
-  border: "#dde1e7",
-  navy: "#1a1a1a",
-  navyLight: "#2e2e2e",
-  amber: "#8B1C32",       // BDR burgundy
-  amberLight: "#fdf2f4",
+  border: "#e3dccd",      // warm tan border
+  navy: "#1B232E",        // BDR heading/footer navy
+  navyLight: "#2c3646",
+  amber: "#641833",       // BDR burgundy (primary brand colour)
+  amberLight: "#f7e9ed",
   green: "#16a34a",
   greenLight: "#f0fdf4",
-  text: "#222222",
-  muted: "#5a5a6a",
-  subtle: "#9a9aaa",
+  text: "#1B232E",
+  muted: "#5c5f66",
+  subtle: "#9b969e",
   error: "#dc2626",
   errorLight: "#fef2f2",
-  highlight: "#fce8ec",
+  highlight: "#f7e9ed",
+  surface: "#efe8dc",     // warm neutral surface for inactive buttons/tables
+  surfaceLight: "#f7f4ee",// near-white warm surface for subtle panels
 };
 
-const input = { width:"100%", boxSizing:"border-box", padding:"10px 14px", fontSize:14, border:`1px solid #cdd1d8`, borderRadius:4, color:C.text, background:"#fff", outline:"none", fontFamily:"inherit" };
+const input = { width:"100%", boxSizing:"border-box", padding:"10px 14px", fontSize:14, border:`1px solid ${C.border}`, borderRadius:4, color:C.text, background:"#fff", outline:"none", fontFamily:"inherit" };
 const label = { display:"block", fontSize:12, fontWeight:600, color:"#444", marginBottom:5, letterSpacing:"0.02em" };
 const card  = { background:"#fff", border:`1px solid ${C.border}`, borderRadius:6, padding:24, marginBottom:16, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" };
 
@@ -804,6 +806,7 @@ async function fetchGmailPdfBase64(token, messageId, attachmentId) {
 
 const LOAD_SHEET_KEYWORDS = ["load sheet", "order confirmation", "load confirmation", "booking confirmation", "rate confirmation", "dispatch", "shipment confirmation", "carrier confirmation"];
 const CARRIER_CONF_KEYWORDS = ["carrier confirmation"];
+const RATE_SHEET_KEYWORDS = ["rate sheet", "rate card", "tariff", "pricing sheet", "freight rates", "lane rates", "rate update", "updated rates", "new rates", "rate schedule"];
 
 function isLoadSheetEmail(subject, body) {
   const text = (subject + " " + (body || "")).toLowerCase();
@@ -841,7 +844,7 @@ function AutocompleteInput({ value, onChange, suggestions, placeholder, inputSty
       />
       {show && (
         <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, minWidth:"100%", background:"#fff",
-          border:"1px solid #e2e8f0", borderRadius:10, boxShadow:"0 8px 28px rgba(0,0,0,0.13)", zIndex:200,
+          border:"1px solid #e7dfd2", borderRadius:10, boxShadow:"0 8px 28px rgba(0,0,0,0.13)", zIndex:200,
           maxHeight:240, overflowY:"auto", padding:"4px 0" }}>
           {filtered.map((s, i) => {
             const parts = s.split(", ");
@@ -850,11 +853,11 @@ function AutocompleteInput({ value, onChange, suggestions, placeholder, inputSty
             return (
               <div key={i} onMouseDown={() => { onChange(s); setOpen(false); }} onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(-1)}
                 style={{ padding:"9px 14px", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between",
-                  background: hovered===i ? "#f0f4ff" : "transparent",
-                  borderLeft: hovered===i ? "3px solid #4f46e5" : "3px solid transparent",
+                  background: hovered===i ? C.amberLight : "transparent",
+                  borderLeft: hovered===i ? `3px solid ${C.amber}` : "3px solid transparent",
                   transition:"background 0.1s" }}>
-                <span style={{ fontSize:13, fontWeight:600, color:"#1e293b" }}>{city}</span>
-                {state && <span style={{ fontSize:12, fontWeight:700, color:"#6366f1", background:"#eef2ff", padding:"2px 7px", borderRadius:5 }}>{state}</span>}
+                <span style={{ fontSize:13, fontWeight:600, color:C.navy }}>{city}</span>
+                {state && <span style={{ fontSize:12, fontWeight:700, color:C.navy, background:"#efe8dc", padding:"2px 7px", borderRadius:5 }}>{state}</span>}
               </div>
             );
           })}
@@ -889,15 +892,11 @@ export default function App() {
   const [contact, setContact]       = useState("Nolan Giesbrecht");
   const [phone, setPhone]           = useState("519-469-9361 ext 113");
   const debounce                    = useRef(null);
-  const [tab, setTab]               = useState("quote");   // quote | history | customers | gmail | capacity
+  const [tab, setTab]               = useState("quote");   // quote | history | gmail
 
   // ── Capacity / Truck planning state ──────────────────────────
   const [truckDays, setTruckDays]           = useState([]);
   const [truckDaysLoaded, setTruckDaysLoaded] = useState(false);
-  const [newTruckDate,  setNewTruckDate]    = useState("");
-  const [newTruckRoute, setNewTruckRoute]   = useState("");
-  const [newTruckCount, setNewTruckCount]   = useState(1);
-  const [capacityTab, setCapacityTab]         = useState("planner");
   const [recurringTrucks, setRecurringTrucks] = useState([]);
   const [newRecurDow,    setNewRecurDow]    = useState("6"); // Saturday
   const [newRecurRoute,  setNewRecurRoute]  = useState("");
@@ -943,6 +942,7 @@ export default function App() {
   const [gmailQuoteTabIdx, setGmailQuoteTabIdx] = useState({});  // {[emailId]: activeQuoteIndex}
   const [sendingIds,    setSendingIds]    = useState(new Set());
   const [scanningAll,   setScanningAll]   = useState(false);
+  const [rateSheetB64,  setRateSheetB64]  = useState(() => { try { return localStorage.getItem("bdr_rate_sheet") || null; } catch(e) { return null; } });
   const gmailClientRef = useRef(null);
   const [scanState, setScanState] = useState(null); // null | {status:"scanning"|"done", found, processed, added}
   const gmailTokenRef = useRef(null);
@@ -955,8 +955,6 @@ export default function App() {
   const [viewingQuote, setViewingQuote] = useState(null);
   const [customers, setCustomers]     = useState([]);
   const [customersLoaded, setCustomersLoaded] = useState(false);
-  const [editingCustomer, setEditingCustomer] = useState(null); // null | "new" | {id,...}
-  const [custSearch, setCustSearch]   = useState("");
   const [plSearch,   setPlSearch]     = useState("");
   const [matchedCustomer, setMatchedCustomer] = useState(null); // auto-matched on parse
 
@@ -1188,26 +1186,6 @@ export default function App() {
     } catch(e) { console.error("Could not save quote:", e); }
   };
 
-  const saveCustomer = async (cust) => {
-    const record = { ...cust, id: cust.id || `cust_${Date.now()}`, updated: Date.now() };
-    try {
-      await window.storage.set(`bdr_customer:${record.id}`, JSON.stringify(record));
-      setCustomers(prev => {
-        const updated = [record, ...prev.filter(c => c.id !== record.id)];
-        return updated.sort((a,b) => (a.company||"").localeCompare(b.company||""));
-      });
-      setEditingCustomer(null);
-    } catch(e) { console.error("Could not save customer:", e); }
-  };
-
-  const deleteCustomer = async (id) => {
-    try {
-      await window.storage.delete(`bdr_customer:${id}`);
-      setCustomers(prev => prev.filter(c => c.id !== id));
-      if (editingCustomer?.id === id) setEditingCustomer(null);
-    } catch(e) {}
-  };
-
   // Auto-match broker company to saved customer profile
   const matchCustomer = (brokerCompany, brokerName) => {
     if (!brokerCompany && !brokerName) return null;
@@ -1315,22 +1293,7 @@ export default function App() {
       );
       const valid = messages.filter(m => m.id);
       setGmailEmails(valid);
-      // Auto-process load sheets only (local keyword+attachment detection, no API quota)
-      const unprocessedLoadSheets = valid.filter(m => {
-        if (gmailQuotesRef.current[m.id]) return false;
-        const headers = m.payload?.headers || [];
-        const subject = headers.find(h => h.name === "Subject")?.value || "";
-        const body = getEmailBody(m.payload);
-        return hasPdfAttachment(m.payload) && isLoadSheetEmail(subject, body);
-      });
-      if (unprocessedLoadSheets.length > 0) {
-        (async () => {
-          for (const m of unprocessedLoadSheets) {
-            await processGmailEmailRef.current?.(m);
-            await new Promise(r => setTimeout(r, 1500));
-          }
-        })();
-      }
+      // Auto-processing is handled by the gmailEmails useEffect
     } catch(e) { console.error("Gmail fetch:", e); }
     finally { setGmailLoading(false); }
   }, []);
@@ -1368,8 +1331,27 @@ export default function App() {
     const from    = headers.find(h => h.name === "From")?.value || "";
     const body    = getEmailBody(email.payload);
 
+    // ── Rate sheet auto-capture ──
+    const emailText = (subject + " " + (body || "")).toLowerCase();
+    if (hasPdfAttachment(email.payload) && RATE_SHEET_KEYWORDS.some(k => emailText.includes(k))) {
+      try {
+        const pdfPart = getPdfAttachmentPart(email.payload);
+        let pdfBase64;
+        if (pdfPart?.body?.attachmentId && gmailTokenRef.current) {
+          pdfBase64 = await fetchGmailPdfBase64(gmailTokenRef.current, id, pdfPart.body.attachmentId);
+        } else if (pdfPart?.body?.data) {
+          pdfBase64 = pdfPart.body.data.replace(/-/g, "+").replace(/_/g, "/");
+        }
+        if (pdfBase64) {
+          setRateSheetB64(pdfBase64);
+          try { localStorage.setItem("bdr_rate_sheet", pdfBase64); } catch(e) {}
+        }
+      } catch(e) { console.warn("Rate sheet capture failed:", e); }
+      // Don't return — continue processing the email normally
+    }
+
     // ── Carrier confirmation detection (sent loads) ──
-    const isCarrierConf = hasPdfAttachment(email.payload) && CARRIER_CONF_KEYWORDS.some(k => (subject + " " + (body||"")).toLowerCase().includes(k));
+    const isCarrierConf = hasPdfAttachment(email.payload) && CARRIER_CONF_KEYWORDS.some(k => emailText.includes(k));
     if (isCarrierConf) {
       setGmailQuotes(prev => ({ ...prev, [id]: { status: "processing" } }));
       try {
@@ -1750,6 +1732,19 @@ export default function App() {
 
   useEffect(() => { processGmailEmailRef.current = processGmailEmail; }, [processGmailEmail]);
   useEffect(() => { fetchInboxRef.current = fetchInbox; }, [fetchInbox]);
+
+  // Auto-process any email that has no status whenever the email list changes
+  useEffect(() => {
+    if (gmailEmails.length === 0) return;
+    const unprocessed = gmailEmails.filter(m => !gmailQuotesRef.current[m.id]);
+    if (unprocessed.length === 0) return;
+    (async () => {
+      for (const m of unprocessed) {
+        await processGmailEmailRef.current?.(m);
+        await new Promise(r => setTimeout(r, 2000)); // 2s stagger — prevents API flood
+      }
+    })();
+  }, [gmailEmails]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-poll Gmail every 5 minutes when connected; also fetch on token restore
   useEffect(() => {
@@ -2264,7 +2259,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
         width:28, height:28, borderRadius:"50%",
         display:"flex", alignItems:"center", justifyContent:"center",
         fontSize:13, fontWeight:700,
-        background: active ? C.amber : done ? C.green : "#dde1e7",
+        background: active ? C.amber : done ? C.green : C.border,
         color: active||done ? "#fff" : "#999",
       }}>
         {done ? "✓" : n}
@@ -2274,23 +2269,23 @@ Be concise and actionable. When asked for recommendations, be specific about whi
   );
 
   return (
-    <div style={{ minHeight:"100vh", background:"#f4f4f4", fontFamily:"'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif", color:C.text, WebkitFontSmoothing:"antialiased" }}>
+    <div style={{ minHeight:"100vh", background:C.bg, fontFamily:"'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", color:C.text, WebkitFontSmoothing:"antialiased" }}>
       <style>{`
         @keyframes spin{to{transform:rotate(360deg)}}
         @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
         *{box-sizing:border-box}
-        body{margin:0;background:#f4f4f4}
-        textarea:focus,input:focus{border-color:${C.amber}!important;box-shadow:0 0 0 3px rgba(139,28,50,0.12)!important;outline:none}
+        body{margin:0;background:${C.bg}}
+        textarea:focus,input:focus{border-color:${C.amber}!important;box-shadow:0 0 0 3px rgba(100,24,51,0.14)!important;outline:none}
         button{transition:all 0.15s}
         button:hover{opacity:0.9}
         ::-webkit-scrollbar{width:6px;height:6px}
-        ::-webkit-scrollbar-track{background:#f0f0f0}
-        ::-webkit-scrollbar-thumb{background:#ccc;border-radius:3px}
+        ::-webkit-scrollbar-track{background:${C.bg}}
+        ::-webkit-scrollbar-thumb{background:#c9bfae;border-radius:3px}
         .nav-link-btn:hover{color:${C.amber}!important}
       `}</style>
 
       {/* ── TOP HEADER — white, full width, like bdrint.ca ── */}
-      <header style={{ background:"#fff", borderBottom:"1px solid #e0e0e0", boxShadow:"0 2px 8px rgba(0,0,0,0.06)", position:"sticky", top:0, zIndex:100 }}>
+      <header style={{ background:"#fff", borderBottom:`3px solid ${C.navy}`, boxShadow:"0 2px 8px rgba(0,0,0,0.06)", position:"sticky", top:0, zIndex:100 }}>
         {/* Top utility bar */}
         <div style={{ background:C.amber, padding:"5px 32px" }}>
           <div style={{ maxWidth:1400, margin:"0 auto", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -2328,18 +2323,18 @@ Be concise and actionable. When asked for recommendations, be specific about whi
           <img src="https://bdrint.ca/wp-content/themes/bdr-international/images/logos/bdr-international-logo.png" alt="BDR International Ltd." style={{ height:56, objectFit:"contain" }}/>
           {/* Nav links */}
           <nav style={{ display:"flex", alignItems:"center", gap:4 }}>
-            {[["quote","Quote"],["gmail","Gmail"],["customers","Customers"],["history","History"],["capacity","Capacity"]].map(([t,l]) => (
+            {[["quote","Quote"],["gmail","Gmail"],["history","History"]].map(([t,l]) => (
               <button key={t} onClick={()=>setTab(t)} className="nav-link-btn" style={{
                 padding:"8px 20px", background:"none", border:"none",
                 borderBottom: tab===t ? `3px solid ${C.amber}` : "3px solid transparent",
-                color: tab===t ? C.amber : "#333",
+                color: tab===t ? C.amber : C.navy,
                 fontSize:15, fontWeight: tab===t ? 700 : 500,
                 cursor:"pointer", letterSpacing:"0.01em",
                 transition:"all 0.15s", marginBottom:-1,
               }}>{l}</button>
             ))}
-            <div style={{ width:1, height:24, background:"#e0e0e0", margin:"0 8px" }}/>
-            <div style={{ fontSize:13, color:"#555", display:"flex", alignItems:"center", gap:6 }}>
+            <div style={{ width:1, height:24, background:C.border, margin:"0 8px" }}/>
+            <div style={{ fontSize:13, color:C.muted, display:"flex", alignItems:"center", gap:6 }}>
               <span style={{ color:C.amber, fontWeight:700 }}>●</span> Freight Quote Tool
             </div>
           </nav>
@@ -2347,231 +2342,9 @@ Be concise and actionable. When asked for recommendations, be specific about whi
       </header>
 
       {/* ── MAIN CONTENT ── */}
-      <div style={{ background:"#f4f4f4" }}>
+      <div style={{ background:C.bg }}>
 
-      {tab === "customers" ? (
-        /* ══ CUSTOMERS TAB ══ */
-        <div style={{ maxWidth:1400, margin:"0 auto", padding:"28px 32px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
-            <div>
-              <div style={{ fontSize:20, fontWeight:700, color:C.navy }}>Customer Profiles</div>
-              <div style={{ fontSize:13, color:C.muted, marginTop:2 }}>{customers.length} profile{customers.length!==1?"s":""} saved</div>
-            </div>
-            <div style={{ display:"flex", gap:10 }}>
-              <input value={custSearch} onChange={e=>setCustSearch(e.target.value)} placeholder="Search company or contact…"
-                style={{ ...input, width:240, fontSize:14 }}/>
-              <button onClick={()=>setEditingCustomer({ company:"", contact_name:"", email:"", phone:"", default_fsc:0.18, typical_lanes:"", notes:"" })}
-                style={{ padding:"10px 20px", background:C.amber, color:"#fff", border:"none", borderRadius:8, fontSize:14, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>
-                + New Profile
-              </button>
-            </div>
-          </div>
-
-          {/* Edit / New form */}
-          {editingCustomer && (
-            <div style={{ ...card, border:`2px solid ${C.amber}`, marginBottom:20 }}>
-              <div style={{ fontSize:16, fontWeight:700, color:C.navy, marginBottom:16 }}>
-                {editingCustomer.id ? `Editing — ${editingCustomer.company}` : "New Customer Profile"}
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
-                {[["Company Name","company"],["Primary Contact","contact_name"],["Email","email"],["Phone","phone"]].map(([l,k]) => (
-                  <div key={k}>
-                    <label style={label}>{l}</label>
-                    <input value={editingCustomer[k]||""} onChange={e=>setEditingCustomer(p=>({...p,[k]:e.target.value}))} style={input}/>
-                  </div>
-                ))}
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
-                <div>
-                  <label style={label}>Default FSC</label>
-                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                    {FSC_OPTS.map(o => (
-                      <button key={o.v} onClick={()=>setEditingCustomer(p=>({...p,default_fsc:o.v}))}
-                        style={{ padding:"7px 14px", fontSize:13, borderRadius:6, cursor:"pointer", fontWeight:editingCustomer.default_fsc===o.v?700:400, background:editingCustomer.default_fsc===o.v?C.navy:"#f1f5f9", color:editingCustomer.default_fsc===o.v?"#fff":C.text, border:`1.5px solid ${editingCustomer.default_fsc===o.v?C.navy:C.border}` }}>
-                        {o.l}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label style={label}>Typical Lanes</label>
-                  <input value={editingCustomer.typical_lanes||""} onChange={e=>setEditingCustomer(p=>({...p,typical_lanes:e.target.value}))} placeholder="e.g. Ontario → Columbus, OH" style={input}/>
-                </div>
-              </div>
-              <div style={{ marginBottom:16 }}>
-                <label style={label}>Notes / Special Instructions</label>
-                <input value={editingCustomer.notes||""} onChange={e=>setEditingCustomer(p=>({...p,notes:e.target.value}))} placeholder="e.g. Always needs liftgate, prefers morning pickups" style={input}/>
-              </div>
-              <div style={{ display:"flex", gap:10 }}>
-                <button onClick={()=>saveCustomer(editingCustomer)}
-                  style={{ padding:"10px 24px", background:C.amber, color:"#fff", border:"none", borderRadius:8, fontSize:14, fontWeight:700, cursor:"pointer" }}>
-                  Save Profile
-                </button>
-                <button onClick={()=>setEditingCustomer(null)}
-                  style={{ padding:"10px 20px", background:"#f1f5f9", color:C.text, border:`1.5px solid ${C.border}`, borderRadius:8, fontSize:14, cursor:"pointer" }}>
-                  Cancel
-                </button>
-                {editingCustomer.id && (
-                  <button onClick={()=>deleteCustomer(editingCustomer.id)}
-                    style={{ padding:"10px 20px", background:"#fff", color:C.error, border:`1.5px solid #fca5a5`, borderRadius:8, fontSize:14, cursor:"pointer", marginLeft:"auto" }}>
-                    Delete Profile
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Customer list */}
-          {!customersLoaded && <div style={{ color:C.muted, fontSize:14 }}>Loading…</div>}
-          {customersLoaded && customers.length === 0 && !editingCustomer && (
-            <div style={{ ...card, textAlign:"center", padding:48, color:C.muted }}>
-              <div style={{ fontSize:32, marginBottom:12 }}>👥</div>
-              <div style={{ fontSize:16, fontWeight:600, color:C.navy }}>No profiles yet</div>
-              <div style={{ fontSize:14, marginTop:4 }}>Profiles are auto-suggested when a known broker emails you. You can also create them manually above.</div>
-            </div>
-          )}
-          <div>
-            {customers
-              .filter(c => {
-                if (!custSearch) return true;
-                const s = custSearch.toLowerCase();
-                return (c.company||"").toLowerCase().includes(s) || (c.contact_name||"").toLowerCase().includes(s);
-              })
-              .map(c => {
-                // Count quotes for this customer
-                const qCount = history.filter(q =>
-                  (q.broker_company||"").toLowerCase().includes((c.company||"").toLowerCase()) ||
-                  (c.company||"").toLowerCase().includes((q.broker_company||"").toLowerCase())
-                ).length;
-                // Build lane slices from history — match on company, broker_name, or email
-                const custQuotes = history.filter(q => {
-                  const cc = (c.company||"").toLowerCase();
-                  if (!cc) return false;
-                  const bc  = (q.broker_company||"").toLowerCase();
-                  const bn  = (q.broker_name||"").toLowerCase();
-                  const be  = (q.broker_email||"").toLowerCase();
-                  const ce  = (c.email||"").toLowerCase();
-                  return bc.includes(cc) || cc.includes(bc) ||
-                         bn.includes(cc) || cc.includes(bn) ||
-                         (ce && be && be.includes(ce.split("@")[1]||"__"));
-                });
-                const laneMap = {};
-                custQuotes.forEach(q => {
-                  if (!q.dest_city || !q.dest_state) return;
-                  const key = `${q.dest_city}, ${q.dest_state}`;
-                  laneMap[key] = (laneMap[key] || 0) + 1;
-                });
-                const laneSlices = Object.entries(laneMap)
-                  .sort((a,b) => b[1]-a[1])
-                  .slice(0, 8)
-                  .map(([lane, count]) => ({ lane, count }));
-
-                return (
-                  <div key={c.id} style={{ ...card, marginBottom:10, padding:0, overflow:"hidden" }}>
-                    <div style={{ display:"flex", alignItems:"stretch" }}>
-                      <div style={{ width:4, background:C.amber, flexShrink:0 }}/>
-                      <div style={{ flex:1, padding:"14px 20px", display:"flex", alignItems:"center", gap:20, flexWrap:"wrap" }}>
-                        <div style={{ minWidth:180 }}>
-                          <div style={{ fontSize:16, fontWeight:700, color:C.navy }}>{c.company}</div>
-                          <div style={{ fontSize:13, color:C.muted }}>{c.contact_name}{c.email ? ` · ${c.email}` : ""}</div>
-                        </div>
-                        <div style={{ minWidth:80 }}>
-                          <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Default FSC</div>
-                          <div style={{ fontSize:14, fontWeight:600, color:C.text }}>{c.default_fsc!=null?(c.default_fsc*100).toFixed(0)+"%":"—"}</div>
-                        </div>
-                        <div style={{ minWidth:80 }}>
-                          <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Quotes</div>
-                          <div style={{ fontSize:14, fontWeight:600, color:C.text }}>{qCount}</div>
-                        </div>
-                        {c.typical_lanes && (
-                          <div style={{ minWidth:160 }}>
-                            <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Typical Lanes</div>
-                            <div style={{ fontSize:13, color:C.text }}>{c.typical_lanes}</div>
-                          </div>
-                        )}
-                        {c.notes && (
-                          <div style={{ flex:1 }}>
-                            <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Notes</div>
-                            <div style={{ fontSize:13, color:C.muted }}>{c.notes}</div>
-                          </div>
-                        )}
-                      </div>
-                      <div style={{ display:"flex", flexDirection:"column", borderLeft:`1px solid ${C.border}` }}>
-                        <button onClick={()=>setEditingCustomer(c)}
-                          style={{ flex:1, padding:"0 20px", background:"none", border:"none", cursor:"pointer", fontSize:13, color:C.navy, fontWeight:600, borderBottom:`1px solid ${C.border}` }}>
-                          Edit
-                        </button>
-                        <button onClick={()=>{ setTab("quote"); setStep("input"); }}
-                          style={{ flex:1, padding:"0 20px", background:"none", border:"none", cursor:"pointer", fontSize:12, color:C.muted }}>
-                          Quote
-                        </button>
-                      </div>
-                    </div>
-                    <div style={{ borderTop:`1px solid ${C.border}`, padding:"14px 20px", background:"#fafcff" }}>
-                      <div style={{ fontSize:11, fontWeight:700, color:"#6b7280", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:12 }}>Top Lanes</div>
-                      {laneSlices.length > 0
-                        ? <LanePieChart slices={laneSlices} />
-                        : <div style={{ fontSize:12, color:"#9ca3af" }}>No quote history found for this customer yet.</div>
-                      }
-                    </div>
-                  </div>
-                );
-              })
-            }
-          </div>
-
-          {/* ── P&L Insights (from BDR Jan–May 2026 report) ── */}
-          <div style={{ marginTop:36 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
-              <div>
-                <div style={{ fontSize:17, fontWeight:700, color:C.navy }}>P&amp;L Insights <span style={{ fontSize:12, fontWeight:400, color:C.muted }}>(Jan–May 2026 · {CUSTOMER_PROFILES.length} shippers)</span></div>
-              </div>
-              <input value={plSearch} onChange={e=>setPlSearch(e.target.value)} placeholder="Search shipper…"
-                style={{ ...input, width:220, fontSize:14 }}/>
-            </div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(320px,1fr))", gap:12 }}>
-              {CUSTOMER_PROFILES
-                .filter(p => !plSearch || p.name.toLowerCase().includes(plSearch.toLowerCase()))
-                .slice(0, plSearch ? 200 : 30)
-                .map(p => (
-                  <div key={p.name} style={{ background:"#fff", borderRadius:10, border:`1px solid ${C.border}`, padding:"14px 16px", boxShadow:"0 1px 3px rgba(0,0,0,0.05)" }}>
-                    <div style={{ fontSize:14, fontWeight:700, color:C.navy, marginBottom:8, lineHeight:1.3 }}>{p.name}</div>
-                    <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:8 }}>
-                      <span style={{ fontSize:12, fontWeight:600, background:"#eff6ff", color:"#1d4ed8", borderRadius:5, padding:"3px 8px" }}>
-                        {p.shipments} loads
-                      </span>
-                      <span style={{ fontSize:12, fontWeight:600, background:"#f0fdf4", color:"#15803d", borderRadius:5, padding:"3px 8px" }}>
-                        ${p.totalRevenue.toLocaleString()} rev
-                      </span>
-                      <span style={{ fontSize:12, color:C.muted, background:"#f8fafc", borderRadius:5, padding:"3px 8px" }}>
-                        avg ${p.avgRevPerShipment}/load
-                      </span>
-                    </div>
-                    {p.pickupCities && p.pickupCities.length > 0 && (
-                      <div style={{ fontSize:11, color:C.muted, marginBottom:3 }}>
-                        <span style={{ fontWeight:600, color:C.text }}>Picks up from: </span>
-                        {p.pickupCities.slice(0,4).join(", ")}{p.pickupCities.length>4?` +${p.pickupCities.length-4} more`:""}
-                      </div>
-                    )}
-                    {p.destinations && p.destinations.length > 0 && (
-                      <div style={{ fontSize:11, color:C.muted }}>
-                        <span style={{ fontWeight:600, color:C.text }}>Delivers to: </span>
-                        {p.destinations.slice(0,4).join(", ")}{p.destinations.length>4?` +${p.destinations.length-4} more`:""}
-                      </div>
-                    )}
-                  </div>
-                ))
-              }
-            </div>
-            {!plSearch && CUSTOMER_PROFILES.length > 30 && (
-              <div style={{ textAlign:"center", marginTop:12, fontSize:13, color:C.muted }}>
-                Showing top 30 by revenue — search to find any of the {CUSTOMER_PROFILES.length} brokers
-              </div>
-            )}
-          </div>
-
-        </div>
-      ) : tab === "history" ? (
+      {tab === "history" ? (
         /* ══ HISTORY / PIPELINE TAB ══ */
         <div style={{ padding:"28px 32px" }}>
           {/* Header */}
@@ -2731,7 +2504,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                           </div>
                           <div style={{ display:"flex", alignItems:"center", padding:"0 16px", borderLeft:`1px solid ${C.border}` }}>
                             <button onClick={()=>updateQuoteOutcome(q.timestamp,"pending")}
-                              style={{ padding:"6px 14px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f1f5f9", color:C.muted, border:`1px solid ${C.border}` }}>
+                              style={{ padding:"6px 14px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#efe8dc", color:C.muted, border:`1px solid ${C.border}` }}>
                               Undo
                             </button>
                           </div>
@@ -2748,7 +2521,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     {pending.map(q => (
                       <div key={q.timestamp} style={{ ...card, padding:0, overflow:"hidden", marginBottom:8 }}>
                         <div style={{ display:"flex", alignItems:"stretch" }}>
-                          <div style={{ width:5, background:q.outcome==="waiting" ? "#fed7aa" : q.outcome==="broker_sending" ? "#ddd6fe" : "#e2e8f0", flexShrink:0 }}/>
+                          <div style={{ width:5, background:q.outcome==="waiting" ? "#fed7aa" : q.outcome==="broker_sending" ? "#ddd6fe" : "#e7dfd2", flexShrink:0 }}/>
                           <div style={{ flex:1, padding:"10px 18px", display:"flex", alignItems:"center", gap:16, flexWrap:"wrap" }}>
                             <div style={{ minWidth:80, fontSize:12, color:C.muted }}>{q.date}</div>
                             <div style={{ minWidth:140, fontSize:13, fontWeight:600 }}>{q.broker_name} {q.broker_company ? <span style={{ fontWeight:400, color:C.muted }}>· {q.broker_company}</span> : ""}</div>
@@ -2781,7 +2554,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                               ✗ Lost
                             </button>
                             <button onClick={()=>updateQuoteOutcome(q.timestamp,"declined")}
-                              style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f9fafb", color:"#6b7280", border:`1px solid #d1d5db` }}>
+                              style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f7f4ee", color:"#6b7280", border:`1px solid #d9d0c2` }}>
                               ✗ Decline
                             </button>
                           </div>
@@ -2894,7 +2667,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                 })
                 .map(q => {
                   const outcomeColor = q.outcome==="received" ? C.green : q.outcome==="lost" ? C.error : q.outcome==="waiting" ? "#c2410c" : q.outcome==="broker_sending" ? "#7c3aed" : q.outcome==="declined" ? "#6b7280" : C.amber;
-                  const outcomeBg    = q.outcome==="received" ? "#f0fdf4" : q.outcome==="lost" ? "#fef2f2" : q.outcome==="waiting" ? "#fff7ed" : q.outcome==="broker_sending" ? "#f5f3ff" : q.outcome==="declined" ? "#f9fafb" : C.card;
+                  const outcomeBg    = q.outcome==="received" ? "#f0fdf4" : q.outcome==="lost" ? "#fef2f2" : q.outcome==="waiting" ? "#fff7ed" : q.outcome==="broker_sending" ? "#f5f3ff" : q.outcome==="declined" ? "#f7f4ee" : C.card;
                   return (
                     <div key={q.timestamp} style={{ ...card, marginBottom:10, padding:0, overflow:"hidden", background:outcomeBg }}>
                       <div style={{ display:"flex", alignItems:"stretch" }}>
@@ -2952,13 +2725,13 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                             )}
                             {q.outcome !== "declined" && q.outcome !== "received" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"declined")}
-                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f9fafb", color:"#6b7280", border:`1px solid #d1d5db` }}>
+                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f7f4ee", color:"#6b7280", border:`1px solid #d9d0c2` }}>
                                 ✗ Decline
                               </button>
                             )}
                             {q.outcome !== "waiting" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"waiting")}
-                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f1f5f9", color:C.muted, border:`1px solid ${C.border}` }}>
+                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#efe8dc", color:C.muted, border:`1px solid ${C.border}` }}>
                                 Reset
                               </button>
                             )}
@@ -3015,7 +2788,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
               )}
             </div>
           ) : (() => {
-            const quoteEmails = gmailEmails.filter(e => ["quote_ready","processing","unserviced"].includes(gmailQuotes[e.id]?.status));
+            const quoteEmails = gmailEmails.filter(e => ["quote_ready","processing","unserviced","ignored"].includes(gmailQuotes[e.id]?.status));
             const sentEmails  = gmailEmails.filter(e => ["sent","load_sheet"].includes(gmailQuotes[e.id]?.status));
             const otherEmails = gmailEmails.filter(e => {
               const s = gmailQuotes[e.id]?.status;
@@ -3036,19 +2809,31 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       {scanningAll ? "⟳ Scanning…" : "⚡ Scan All"}
                     </button>
                     <button onClick={()=>fetchInbox(gmailToken)} disabled={gmailLoading}
-                      style={{ padding:"9px 16px", background:"#f1f5f9", color:C.text, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
+                      style={{ padding:"9px 16px", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
                       {gmailLoading ? "⟳" : "↻ Refresh"}
                     </button>
                     <button
                       onClick={scanAllLoadSheets}
                       disabled={scanState?.status === "scanning"}
-                      style={{ padding:"9px 16px", background: scanState?.status === "scanning" ? "#e0e7ff" : "#eef2ff", color:"#4338ca", border:"1.5px solid #c7d2fe", borderRadius:7, fontSize:13, cursor: scanState?.status === "scanning" ? "default" : "pointer", fontWeight:600 }}>
+                      style={{ padding:"9px 16px", background: scanState?.status === "scanning" ? "#e3c9d1" : C.amberLight, color:C.amber, border:"1.5px solid #e3c9d1", borderRadius:7, fontSize:13, cursor: scanState?.status === "scanning" ? "default" : "pointer", fontWeight:600 }}>
                       {scanState?.status === "scanning"
                         ? `Scanning… ${scanState.processed}/${scanState.found}`
                         : scanState?.status === "done"
                         ? `✓ Scan done · ${scanState.added} added`
                         : "🔍 Scan All Emails"}
                     </button>
+                    {/* Rate sheet PDF — auto-captured from incoming emails */}
+                    {rateSheetB64 && (
+                      <button onClick={() => {
+                        const bin = atob(rateSheetB64);
+                        const bytes = new Uint8Array(bin.length);
+                        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                        const blob = new Blob([bytes], { type:"application/pdf" });
+                        window.open(URL.createObjectURL(blob), "_blank");
+                      }} style={{ padding:"9px 14px", background:"#f0fdf4", color:C.green, border:`1.5px solid #bbf7d0`, borderRadius:7, fontSize:13, fontWeight:600, cursor:"pointer" }}>
+                        📄 Rate Sheet
+                      </button>
+                    )}
                     <button onClick={()=>{ setGmailToken(null); setGmailUser(null); setGmailEmails([]); setGmailQuotes({}); }}
                       style={{ padding:"9px 16px", background:"#fff", color:C.subtle, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
                       Disconnect
@@ -3091,12 +2876,25 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       const isSending = sendingIds.has(email.id);
                       const expanded   = gmailExpandedId === email.id;
                       if (q?.status === "declined") return (
-                        <div key={email.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background:"#f8fafc", border:`1px solid ${C.border}`, borderRadius:8, marginBottom:5, opacity:0.6 }}>
+                        <div key={email.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background:"#f7f4ee", border:`1px solid ${C.border}`, borderRadius:8, marginBottom:5, opacity:0.6 }}>
                           <div style={{ flex:1, minWidth:0 }}>
                             <span style={{ fontSize:12, fontWeight:500, color:C.text }}>{fromName}</span>
                             <span style={{ fontSize:11, color:C.subtle, marginLeft:8 }}>{subject}</span>
                           </div>
-                          <span style={{ fontSize:11, fontWeight:600, color:C.subtle, padding:"1px 7px", background:"#f1f5f9", borderRadius:10 }}>✗ Declined</span>
+                          <span style={{ fontSize:11, fontWeight:600, color:C.subtle, padding:"1px 7px", background:"#efe8dc", borderRadius:10 }}>✗ Declined</span>
+                        </div>
+                      );
+                      if (q?.status === "ignored") return (
+                        <div key={email.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background:"#f7f4ee", border:`1px solid ${C.border}`, borderRadius:8, marginBottom:5, opacity:0.45 }}>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <span style={{ fontSize:12, fontWeight:500, color:C.text }}>{fromName}</span>
+                            <span style={{ fontSize:11, color:C.subtle, marginLeft:8 }}>{subject}</span>
+                          </div>
+                          <span style={{ fontSize:11, color:C.subtle }}>Ignored</span>
+                          <button onClick={() => setGmailQuotes(prev => ({ ...prev, [email.id]: { ...prev[email.id], status: "quote_ready" } }))}
+                            style={{ fontSize:11, padding:"2px 9px", borderRadius:6, border:`1px solid ${C.border}`, background:"#fff", color:C.navy, cursor:"pointer", flexShrink:0 }}>
+                            Restore
+                          </button>
                         </div>
                       );
                       // Normalize to quotes[] array — supports old flat structure and new multi-quote
@@ -3115,7 +2913,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
                       return (
                         <div key={email.id} style={{ ...card, padding:0, overflow:"hidden", marginBottom:10,
-                          border:`1.5px solid ${expanded?"#93c5fd":q?.status==="quote_ready"?"#bbf7d0":q?.status==="unserviced"?"#fde68a":C.border}` }}>
+                          border:`1.5px solid ${expanded?C.amber:q?.status==="quote_ready"?"#bbf7d0":q?.status==="unserviced"?"#fde68a":C.border}` }}>
 
                           {/* Collapsed header — always visible */}
                           <div onClick={()=>setGmailExpandedId(p => p===email.id ? null : email.id)}
@@ -3164,7 +2962,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                         <button key={idx}
                                           onClick={() => setGmailQuoteTabIdx(prev => ({ ...prev, [email.id]: idx }))}
                                           style={{ padding:"6px 14px", fontSize:12, fontWeight:activeQIdx===idx?700:400, borderRadius:6, cursor:"pointer",
-                                            background: activeQIdx===idx ? C.navy : "#f1f5f9",
+                                            background: activeQIdx===idx ? C.navy : "#efe8dc",
                                             color: activeQIdx===idx ? "#fff" : C.text,
                                             border: `1.5px solid ${activeQIdx===idx ? C.navy : C.border}` }}>
                                           Quote {idx+1}: {qItem.parsed?.dest_city||"?"}{qItem.parsed?.dest_state?`, ${qItem.parsed.dest_state}`:""}
@@ -3214,7 +3012,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                       {FSC_OPTS.map(o => (
                                         <button key={o.v} onClick={()=>updateGmailQuoteSettings(email.id, activeQIdx, o.v, accsVal, customAccVal)}
                                           style={{ padding:"6px 12px", fontSize:12, fontWeight:fscVal===o.v?700:400, borderRadius:6, cursor:"pointer",
-                                            background:fscVal===o.v?C.navy:"#f1f5f9", color:fscVal===o.v?"#fff":C.text, border:`1.5px solid ${fscVal===o.v?C.navy:C.border}` }}>
+                                            background:fscVal===o.v?C.navy:"#efe8dc", color:fscVal===o.v?"#fff":C.text, border:`1.5px solid ${fscVal===o.v?C.navy:C.border}` }}>
                                           {o.l}
                                         </button>
                                       ))}
@@ -3228,7 +3026,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                       {ACC_OPTS.map(a => (
                                         <button key={a.id} onClick={()=>updateGmailQuoteSettings(email.id, activeQIdx, fscVal, {...accsVal,[a.id]:!accsVal[a.id]}, customAccVal)}
                                           style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", fontWeight:accsVal[a.id]?600:400,
-                                            background:accsVal[a.id]?"#eff6ff":"#f1f5f9", color:accsVal[a.id]?"#1d4ed8":C.text, border:`1.5px solid ${accsVal[a.id]?"#93c5fd":C.border}` }}>
+                                            background:accsVal[a.id]?C.navy:"#efe8dc", color:accsVal[a.id]?"#fff":C.text, border:`1.5px solid ${accsVal[a.id]?C.navy:C.border}` }}>
                                           {a.l} <span style={{ opacity:0.6, fontSize:11 }}>({a.n})</span>
                                         </button>
                                       ))}
@@ -3265,7 +3063,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                           {isSending ? "Sending…" : `Send All ${quotesArr.filter(x=>!x.unserviced).length} Quotes`}
                                         </button>
                                         <button onClick={()=>sendGmailReply(email, activeQ?.quoteText||"")} disabled={isSending||!activeQ?.quoteText}
-                                          style={{ padding:"10px 18px", background:isSending?"#94a3b8":"#1d4ed8", color:"#fff", border:"none", borderRadius:7, fontSize:13, fontWeight:600, cursor:isSending?"not-allowed":"pointer" }}>
+                                          style={{ padding:"10px 18px", background:isSending?"#94a3b8":C.amber, color:"#fff", border:"none", borderRadius:7, fontSize:13, fontWeight:600, cursor:isSending?"not-allowed":"pointer" }}>
                                           Send Quote {activeQIdx+1} Only
                                         </button>
                                       </>
@@ -3280,8 +3078,12 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                       ✗ Decline
                                     </button>
                                     <button onClick={()=>processGmailEmail(email)}
-                                      style={{ padding:"10px 16px", background:"#f1f5f9", color:C.muted, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
+                                      style={{ padding:"10px 16px", background:"#efe8dc", color:C.muted, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
                                       Re-process
+                                    </button>
+                                    <button onClick={()=>{ setGmailQuotes(prev => ({ ...prev, [email.id]: { ...prev[email.id], status: "ignored" } })); setGmailExpandedId(null); }}
+                                      style={{ padding:"10px 16px", background:"#fff", color:C.subtle, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
+                                      Ignore
                                     </button>
                                   </div>
                                   </div>{/* end left col */}
@@ -3295,7 +3097,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                     <div style={{ fontSize:11, color:C.muted, marginBottom:10 }}>
                                       <span style={{ fontWeight:600 }}>Subject:</span> {subject}
                                     </div>
-                                    <pre style={{ fontSize:11, color:C.text, whiteSpace:"pre-wrap", wordBreak:"break-word", fontFamily:"inherit", lineHeight:1.6, maxHeight:420, overflowY:"auto", background:"#f8fafc", border:`1px solid ${C.border}`, borderRadius:6, padding:"10px 12px", margin:0 }}>
+                                    <pre style={{ fontSize:11, color:C.text, whiteSpace:"pre-wrap", wordBreak:"break-word", fontFamily:"inherit", lineHeight:1.6, maxHeight:420, overflowY:"auto", background:"#f7f4ee", border:`1px solid ${C.border}`, borderRadius:6, padding:"10px 12px", margin:0 }}>
                                       {getEmailBody(email.payload) || "(No text body found)"}
                                     </pre>
                                   </div>
@@ -3339,7 +3141,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                           const statusLabel = !q ? "Unprocessed" : q.status==="classified" ? (CLASS_LABELS[q.email_type]||q.email_type) : q.status==="not_quote" ? "Not a quote" : q.status==="error" ? "Error" : q.status;
                           const isError = q?.status === "error";
                           return (
-                            <div key={email.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background: isError ? "#fef2f2" : "#f8fafc", border:`1px solid ${isError ? "#fca5a5" : C.border}`, borderRadius:8, marginBottom:5 }}>
+                            <div key={email.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background: isError ? "#fef2f2" : "#f7f4ee", border:`1px solid ${isError ? "#fca5a5" : C.border}`, borderRadius:8, marginBottom:5 }}>
                               <div style={{ flex:1, minWidth:0 }}>
                                 <span style={{ fontSize:12, color:C.text, fontWeight:500 }}>{fromName}</span>
                                 <span style={{ fontSize:11, color:C.subtle, marginLeft:8, overflow:"hidden", textOverflow:"ellipsis" }}>{subject}</span>
@@ -3421,7 +3223,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                     {isLoadSheet && hasPdfAttachment(email.payload) && (!histMatch.dest_city || !histMatch.total || parseFloat(histMatch.total)===0) && (
                                       <button onClick={()=>reparsePDFEmail(email, histMatch.timestamp)}
                                         disabled={q?.reparsing}
-                                        style={{ padding:"3px 10px", fontSize:11, fontWeight:700, borderRadius:5, cursor:"pointer", background:"#4f46e5", color:"#fff", border:"none", opacity:q?.reparsing?0.6:1 }}>
+                                        style={{ padding:"3px 10px", fontSize:11, fontWeight:700, borderRadius:5, cursor:"pointer", background:C.amber, color:"#fff", border:"none", opacity:q?.reparsing?0.6:1 }}>
                                         {q?.reparsing ? "⟳ Reading PDF…" : "📄 Re-parse PDF"}
                                       </button>
                                     )}
@@ -3462,796 +3264,6 @@ Be concise and actionable. When asked for recommendations, be specific about whi
             );
           })()}
         </div>
-
-      ) : tab === "capacity" ? (
-        /* ══ CAPACITY TAB ══ */
-        (() => {
-          const TRUCK_FT = 60;
-          const boardLoads = history.filter(q => q.outcome === "received" || q.outcome === "broker_sending");
-
-          const isFTL = (q) => q.skids === "FTL" || String(q.skids).toUpperCase() === "FTL";
-          const getFootage = (q) => {
-            if (isFTL(q)) return TRUCK_FT;
-            if (q.footage && parseFloat(q.footage) > 0) return parseFloat(q.footage);
-            return (parseInt(q.skids) || 1) * 2;
-          };
-
-          const DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-
-          // Generate truck days from recurring schedule (next 3 weeks)
-          const today = new Date();
-          today.setHours(0,0,0,0);
-          const generatedDays = [];
-          for (let w = 0; w < 3; w++) {
-            for (const rt of recurringTrucks) {
-              const dow = parseInt(rt.dayOfWeek);
-              const diff = (dow - today.getDay() + 7) % 7 + w * 7;
-              if (diff === 0 && w === 0) { /* skip if today already passed for first week — still include it */ }
-              const d = new Date(today); d.setDate(today.getDate() + diff);
-              const dateStr = d.toISOString().slice(0,10);
-              const alreadyManual = truckDays.some(td => td.date === dateStr && td.route.toLowerCase() === rt.route.toLowerCase());
-              if (!alreadyManual) generatedDays.push({ id:`recur_${rt.id}_${dateStr}`, date:dateStr, route:rt.route, numTrucks:rt.numTrucks, driver:rt.driver||"", isRecurring:true });
-            }
-          }
-          const allTruckDays = [...truckDays, ...generatedDays].sort((a,b) => a.date.localeCompare(b.date));
-
-          const stateNames = {
-            al:'alabama',ak:'alaska',az:'arizona',ar:'arkansas',ca:'california',
-            co:'colorado',ct:'connecticut',de:'delaware',fl:'florida',ga:'georgia',
-            hi:'hawaii',id:'idaho',il:'illinois',in:'indiana',ia:'iowa',
-            ks:'kansas',ky:'kentucky',la:'louisiana',me:'maine',md:'maryland',
-            ma:'massachusetts',mi:'michigan',mn:'minnesota',ms:'mississippi',
-            mo:'missouri',mt:'montana',ne:'nebraska',nv:'nevada',nh:'new hampshire',
-            nj:'new jersey',nm:'new mexico',ny:'new york',nc:'north carolina',
-            nd:'north dakota',oh:'ohio',ok:'oklahoma',or:'oregon',pa:'pennsylvania',
-            ri:'rhode island',sc:'south carolina',sd:'south dakota',tn:'tennessee',
-            tx:'texas',ut:'utah',vt:'vermont',va:'virginia',wa:'washington',
-            wv:'west virginia',wi:'wisconsin',wy:'wyoming',on:'ontario',qc:'quebec',
-          };
-
-          const routeScore = (load, td) => {
-            const route = (td.route || "").toLowerCase();
-            const abbr  = (load.dest_state || "").toLowerCase();
-            const city  = (load.dest_city  || "").toLowerCase();
-            const full  = stateNames[abbr] || abbr;
-            if (route.includes(abbr) || route.includes(full)) return 2;
-            if (city && route.includes(city)) return 1;
-            return 0;
-          };
-
-          // Returns true if a truck day is driven by a Texas-local-only driver
-          const isLocalTxDay = (td) => {
-            if (!td.driver) return false;
-            const dr = drivers.find(d => d.name.toLowerCase() === td.driver.toLowerCase());
-            if (!dr) return false;
-            const cats = Array.isArray(dr.category) ? dr.category : [dr.category || "crossborder"];
-            return cats.includes("local_tx") && !cats.includes("crossborder");
-          };
-
-          // Global auto-assign: confirmed loads first, then highest value
-          const truckSlots = {};
-          allTruckDays.forEach(td => {
-            truckSlots[td.id] = Array.from({length: td.numTrucks}, (_,i) => ({num:i+1, footage:0, loads:[]}));
-          });
-
-          const sortedLoads = [...boardLoads].sort((a,b) => {
-            if (a.outcome !== b.outcome) return a.outcome === "received" ? -1 : 1;
-            return (parseFloat(b.total)||0) - (parseFloat(a.total)||0);
-          });
-
-          // Deduplicate loads by timestamp so the same shipment can never be placed twice
-          const seenTimestamps = new Set();
-          const uniqueLoads = sortedLoads.filter(l => {
-            if (seenTimestamps.has(l.timestamp)) return false;
-            seenTimestamps.add(l.timestamp);
-            return true;
-          });
-
-          const assignedSet = new Set();
-          for (const load of uniqueLoads) {
-            const ft = getFootage(load);
-            const ftl = isFTL(load);
-            const usedFt = Math.min(ft, TRUCK_FT);
-            const pickupDate = load.pickup_date || load.date || "";
-            const scored = allTruckDays
-              .map(td => ({ td, score: routeScore(load, td) }))
-              .filter(({td}) => !pickupDate || pickupDate <= td.date)
-              .filter(({td}) => !truckExclusions[`${td.id}:${load.timestamp}`])
-              .filter(({score}) => score > 0)
-              .sort((a,b) => b.score - a.score || a.td.date.localeCompare(b.td.date));
-            for (const {td} of scored) {
-              const truck = truckSlots[td.id].find(t => {
-                if (t.footage + usedFt > TRUCK_FT) return false; // LTL cap: 60ft per truck
-                if (t.hasFTL) return false;
-                if (ftl && t.footage > 0) return false;
-                return true;
-              });
-              if (truck) {
-                truck.footage += usedFt;
-                truck.loads.push({...load, _ft: usedFt});
-                if (ftl) truck.hasFTL = true;
-                assignedSet.add(load.timestamp);
-                break;
-              }
-            }
-          }
-
-          const unassigned = boardLoads.filter(l => !assignedSet.has(l.timestamp));
-
-          const FtBar = ({used, total=TRUCK_FT}) => {
-            const pct = Math.min(100,(used/total)*100);
-            const color = pct>90?C.error:pct>70?"#f59e0b":C.green;
-            return (
-              <div style={{marginTop:4}}>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.muted,marginBottom:3}}>
-                  <span>{used.toFixed(1)} / {total} ft</span>
-                  <span style={{color,fontWeight:700}}>{pct.toFixed(0)}%</span>
-                </div>
-                <div style={{height:6,background:"#e2e8f0",borderRadius:3,overflow:"hidden"}}>
-                  <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:3,transition:"width 0.3s"}}/>
-                </div>
-              </div>
-            );
-          };
-
-          return (
-            <div style={{maxWidth:1400,margin:"0 auto",padding:"28px 32px"}}>
-              {/* Header */}
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,gap:16,flexWrap:"wrap"}}>
-                <div>
-                  <div style={{fontSize:22,fontWeight:800,color:C.navy}}>Capacity</div>
-                  <div style={{fontSize:13,color:C.muted,marginTop:2}}>
-                    {history.filter(q=>q.outcome==="received").length} confirmed · {history.filter(q=>q.outcome==="broker_sending").length} incoming · {allTruckDays.reduce((s,t)=>s+t.numTrucks,0)} trucks scheduled · {drivers.length} drivers
-                  </div>
-                </div>
-                {capacityTab === "planner" && (
-                <div style={{...card,padding:"16px 20px",marginBottom:0,display:"flex",gap:10,alignItems:"flex-end",flexWrap:"wrap"}}>
-                  <div>
-                    <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:4}}>Date</div>
-                    <input type="date" value={newTruckDate} onChange={e=>setNewTruckDate(e.target.value)} style={{...input,width:150,fontSize:13}}/>
-                  </div>
-                  <div>
-                    <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:4}}>Route / Destination</div>
-                    <input value={newTruckRoute} onChange={e=>setNewTruckRoute(e.target.value)} placeholder="e.g. Tennessee"
-                      style={{...input,width:180,fontSize:13}}/>
-                  </div>
-                  <div>
-                    <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:4}}>Trucks</div>
-                    <input type="number" min={1} max={20} value={newTruckCount} onChange={e=>setNewTruckCount(Math.max(1,parseInt(e.target.value)||1))}
-                      style={{...input,width:70,fontSize:13}}/>
-                  </div>
-                  <button disabled={!newTruckDate} onClick={async () => {
-                    if (!newTruckDate) return;
-                    const td = {id:`td_${Date.now()}`,date:newTruckDate,route:newTruckRoute.trim()||newTruckDate,numTrucks:newTruckCount};
-                    await saveTruckDay(td);
-                    setNewTruckDate(""); setNewTruckRoute(""); setNewTruckCount(1);
-                  }} style={{padding:"10px 20px",background:newTruckDate?C.navy:"#cbd5e1",color:"#fff",border:"none",borderRadius:7,fontSize:13,fontWeight:700,cursor:newTruckDate?"pointer":"not-allowed"}}>
-                    + Add Truck
-                  </button>
-                </div>
-                )}
-              </div>
-
-              {/* Sub-tab bar */}
-              <div style={{display:"flex",gap:4,marginBottom:20,background:"#f1f5f9",borderRadius:10,padding:4,width:"fit-content"}}>
-                {[["planner","Planner"],["drivers",`Drivers (${drivers.length})`]].map(([t,l])=>(
-                  <button key={t} onClick={()=>setCapacityTab(t)}
-                    style={{padding:"7px 20px",borderRadius:8,fontSize:13,fontWeight:700,cursor:"pointer",border:"none",transition:"all 0.15s",
-                      background:capacityTab===t?"#fff":"transparent",
-                      color:capacityTab===t?C.navy:C.muted,
-                      boxShadow:capacityTab===t?"0 1px 4px rgba(0,0,0,0.1)":"none"}}>
-                    {l}
-                  </button>
-                ))}
-              </div>
-
-              {capacityTab === "drivers" && <>
-              <div style={{...card, marginBottom:20, padding:"18px 20px"}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:drivers.length>0||driverFormOpen?12:0}}>
-                  <div style={{fontSize:15,fontWeight:700,color:C.navy}}>Drivers</div>
-                  <button onClick={()=>setDriverFormOpen(v=>!v)}
-                    style={{padding:"6px 14px",background:driverFormOpen?"#f1f5f9":C.navy,color:driverFormOpen?C.navy:"#fff",border:`1px solid ${driverFormOpen?C.border:"transparent"}`,borderRadius:7,fontSize:12,fontWeight:700,cursor:"pointer"}}>
-                    {driverFormOpen ? "Cancel" : "+ Add Driver"}
-                  </button>
-                </div>
-
-                {/* Driver list grouped by category */}
-                {drivers.length > 0 && (
-                  <div style={{marginBottom:driverFormOpen?16:0}}>
-                    {[["crossborder","Cross-Border","#1e3a5f","#e8f0fe"],["local","Local","#14532d","#f0fdf4"],["local_tx","Local Texas","#7c2d12","#fff7ed"],["sprinter","Sprinter","#4a1d96","#f5f3ff"]].map(([cat,label,color,bg])=>{
-                      const PRIORITY = ["crossborder","local_tx","sprinter","local"];
-                      const getCats = d => Array.isArray(d.category) ? d.category : [d.category||"crossborder"];
-                      const getPrimary = d => PRIORITY.find(c => getCats(d).includes(c)) || "crossborder";
-                      const group = drivers.filter(d => getPrimary(d) === cat);
-                      if (group.length===0) return null;
-                      return (
-                        <div key={cat} style={{marginBottom:16}}>
-                          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,padding:"6px 12px",background:bg,borderRadius:8,border:`1px solid ${color}20`}}>
-                            <div style={{width:8,height:8,borderRadius:"50%",background:color,flexShrink:0}}/>
-                            <span style={{fontSize:12,fontWeight:800,color:color,textTransform:"uppercase",letterSpacing:"0.06em"}}>{label}</span>
-                            <span style={{fontSize:11,color:color,opacity:0.7,fontWeight:600}}>· {group.length} driver{group.length!==1?"s":""}</span>
-                          </div>
-                          <div style={{display:"flex",flexDirection:"column",gap:5}}>
-                            {group.map((dr,idx) => {
-                      const isOO    = dr.driverType === "owner_op";
-                      const isDock  = !!dr.worksDock;
-                      const isOOS   = !!dr.outOfService;
-                      const palette = ["#4f46e5","#0891b2","#059669","#d97706","#dc2626","#0284c7","#16a34a"];
-                      const accent  = isOOS ? "#991b1b" : isOO ? "#7c3aed" : isDock ? "#0e7490" : palette[idx % palette.length];
-                      const initials = dr.name.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
-                      const rowBorder = editingDriverId===dr.id ? "#6366f1" : isOOS ? "#fca5a5" : isOO ? "#c4b5fd" : isDock ? "#67e8f9" : "#e2e8f0";
-                      const rowBg     = isOOS ? "#fef2f2" : isOO ? "#faf5ff" : isDock ? "#ecfeff" : "#fff";
-                      return (
-                        <div key={dr.id} style={{borderRadius:10,overflow:"hidden",
-                          border:`1.5px solid ${rowBorder}`,
-                          background: rowBg}}>
-                          {editingDriverId === dr.id ? (
-                            /* ── Edit form ── */
-                            <div style={{padding:"16px"}}>
-                              <div style={{fontSize:13,fontWeight:700,color:C.navy,marginBottom:12}}>Edit Driver</div>
-                              <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:12}}>
-                                <div>
-                                  <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:5}}>Name</div>
-                                  <input value={editDriverName} onChange={e=>setEditDriverName(e.target.value)} style={{...input,width:200,fontSize:13}}/>
-                                </div>
-                                <div>
-                                  <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:5}}>Truck #</div>
-                                  <input value={editDriverTruck} onChange={e=>setEditDriverTruck(e.target.value)} placeholder="e.g. 12"
-                                    style={{...input,width:100,fontSize:13}}/>
-                                </div>
-                                <div>
-                                  <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:5}}>Driver Type</div>
-                                  <div style={{display:"flex",gap:6}}>
-                                    {[["company","Company Driver"],["owner_op","Owner Operator"]].map(([v,l])=>(
-                                      <button key={v} onClick={()=>setEditDriverType(v)}
-                                        style={{padding:"6px 12px",fontSize:12,fontWeight:700,borderRadius:7,cursor:"pointer",border:`1.5px solid ${editDriverType===v?accent:"#e2e8f0"}`,background:editDriverType===v?accent:"#f8fafc",color:editDriverType===v?"#fff":"#64748b"}}>
-                                        {l}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                                <div>
-                                  <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:5}}>Truck Type</div>
-                                  <div style={{display:"flex",gap:6}}>
-                                    {[["semi","Semi (53 ft)"],["straight","Straight Truck (24 ft)"]].map(([v,l])=>(
-                                      <button key={v} onClick={()=>setEditDriverTruckType(v)}
-                                        style={{padding:"6px 12px",fontSize:12,fontWeight:700,borderRadius:7,cursor:"pointer",border:`1.5px solid ${editDriverTruckType===v?accent:"#e2e8f0"}`,background:editDriverTruckType===v?accent:"#f8fafc",color:editDriverTruckType===v?"#fff":"#64748b"}}>
-                                        {l}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                                <div>
-                                  <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:5}}>Category</div>
-                                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                                    {[["crossborder","Cross-Border"],["local","Local"],["local_tx","Local Texas"],["sprinter","Sprinter"]].map(([v,l])=>{
-                                      const on=(editDriverCategory||[]).includes(v);
-                                      return (
-                                        <button key={v} onClick={()=>setEditDriverCategory(prev=>{
-                                          const arr=Array.isArray(prev)?prev:[prev||"crossborder"];
-                                          return on?arr.filter(x=>x!==v):[...arr,v];
-                                        })}
-                                          style={{padding:"6px 12px",fontSize:12,fontWeight:700,borderRadius:7,cursor:"pointer",
-                                            border:`1.5px solid ${on?accent:"#e2e8f0"}`,
-                                            background:on?accent:"#f8fafc",
-                                            color:on?"#fff":"#64748b"}}>
-                                          {l}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                                <div>
-                                  <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:5}}>Departure Days</div>
-                                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                                    {DAYS.map((d,i)=>{
-                                      const on=(editDriverDays||[]).includes(i);
-                                      return (
-                                        <button key={i} onClick={()=>setEditDriverDays(prev=>(prev||[]).includes(i)?prev.filter(x=>x!==i):[...(prev||[]),i])}
-                                          style={{padding:"5px 10px",fontSize:12,fontWeight:700,borderRadius:7,cursor:"pointer",border:`1.5px solid ${on?accent:"#e2e8f0"}`,background:on?accent:"#f8fafc",color:on?"#fff":"#64748b"}}>
-                                          {d.slice(0,3)}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                  <div style={{display:"flex",gap:14,marginTop:10}}>
-                                    <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
-                                      <input type="checkbox" checked={editDriverPartTime} onChange={e=>setEditDriverPartTime(e.target.checked)} style={{width:15,height:15,accentColor:"#4f46e5"}}/>
-                                      <span style={{fontSize:12,fontWeight:600,color:C.text}}>Part Time</span>
-                                    </label>
-                                    <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
-                                      <input type="checkbox" checked={editDriverDock} onChange={e=>setEditDriverDock(e.target.checked)} style={{width:15,height:15,accentColor:"#4f46e5"}}/>
-                                      <span style={{fontSize:12,fontWeight:600,color:C.text}}>Works the Dock</span>
-                                    </label>
-                                  </div>
-                                </div>
-                              </div>
-                              {(Array.isArray(editDriverCategory)?editDriverCategory:[editDriverCategory||"crossborder"]).includes("local") && !(Array.isArray(editDriverCategory)?editDriverCategory:[editDriverCategory||"crossborder"]).some(c=>["crossborder","local_tx","sprinter"].includes(c)) ? (
-                                <div style={{marginBottom:12,padding:"10px 14px",background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,display:"flex",alignItems:"center",gap:8}}>
-                                  <span style={{fontSize:16}}>🍁</span>
-                                  <span style={{fontSize:13,fontWeight:700,color:"#14532d"}}>Ontario Only — no cross-border routes</span>
-                                </div>
-                              ) : (
-                              <div style={{marginBottom:12}}>
-                                <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:7}}>
-                                  Preferred Lanes{(Array.isArray(editDriverCategory)?editDriverCategory:[editDriverCategory]).includes("local_tx")&&!(Array.isArray(editDriverCategory)?editDriverCategory:[editDriverCategory]).includes("crossborder")?" (Texas Only)":""}
-                                </div>
-                                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                                  {RATE_CITIES.filter(c=>{const ec=Array.isArray(editDriverCategory)?editDriverCategory:[editDriverCategory]; return (ec.includes("local_tx")&&!ec.includes("crossborder"))?c.state==="TX":true;}).map(c=>{
-                                    const label=`${c.city}, ${c.state}`;
-                                    const on=editDriverLanes.includes(label);
-                                    return (
-                                      <button key={label} onClick={()=>setEditDriverLanes(prev=>on?prev.filter(l=>l!==label):[...prev,label])}
-                                        style={{padding:"4px 11px",fontSize:12,fontWeight:600,borderRadius:20,cursor:"pointer",transition:"all 0.15s",
-                                          background:on?accent:"#f8fafc",color:on?"#fff":"#64748b",border:`1.5px solid ${on?accent:"#e2e8f0"}`}}>
-                                        {label}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                              )}
-                              <div style={{display:"flex",gap:8}}>
-                                <button onClick={async()=>{
-                                  await saveDriver({...dr,name:editDriverName.trim()||dr.name,truckNumber:editDriverTruck.trim(),departureDays:editDriverDays,defaultDay:(editDriverDays||[])[0]??null,driverType:editDriverType,truckType:editDriverTruckType,category:editDriverCategory,outOfService:editDriverOOS,partTime:editDriverPartTime,worksDock:editDriverDock,lanes:editDriverLanes});
-                                  setEditingDriverId(null);
-                                }} style={{padding:"7px 18px",background:C.navy,color:"#fff",border:"none",borderRadius:7,fontSize:13,fontWeight:700,cursor:"pointer"}}>
-                                  Save
-                                </button>
-                                <button onClick={()=>setEditingDriverId(null)}
-                                  style={{padding:"7px 14px",background:"#f1f5f9",color:C.navy,border:"1px solid #e2e8f0",borderRadius:7,fontSize:13,fontWeight:600,cursor:"pointer"}}>
-                                  Cancel
-                                </button>
-                                <button onClick={()=>{ deleteDriver(dr.id); setEditingDriverId(null); }}
-                                  style={{padding:"7px 14px",background:"none",color:C.error,border:"none",fontSize:12,fontWeight:600,cursor:"pointer",marginLeft:"auto"}}>
-                                  Remove
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            /* ── Compact view row ── */
-                            <div style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px"}}>
-                              {/* Accent dot + initials */}
-                              <div style={{width:32,height:32,borderRadius:"50%",background:accent,display:"flex",alignItems:"center",
-                                justifyContent:"center",fontSize:12,fontWeight:800,color:"#fff",flexShrink:0}}>
-                                {initials}
-                              </div>
-                              {/* Name + truck # */}
-                              <div style={{minWidth:140,flexShrink:0}}>
-                                <div style={{fontSize:13,fontWeight:700,color:C.navy}}>{dr.name}</div>
-                                {dr.truckNumber && <div style={{fontSize:11,color:C.muted}}>Truck #{dr.truckNumber}</div>}
-                              </div>
-                              {/* Meta badges */}
-                              <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0,flexWrap:"wrap"}}>
-                                {(dr.departureDays||[]).map(d=>(
-                                  <span key={d} style={{fontSize:11,fontWeight:600,color:accent,background:`${accent}15`,padding:"2px 8px",borderRadius:20,border:`1px solid ${accent}30`}}>{DAYS[d].slice(0,3)}</span>
-                                ))}
-                                {!(dr.departureDays||[]).length && dr.defaultDay!=null && <span style={{fontSize:11,fontWeight:600,color:accent,background:`${accent}15`,padding:"2px 8px",borderRadius:20,border:`1px solid ${accent}30`}}>{DAYS[dr.defaultDay].slice(0,3)}</span>}
-                                {isOOS && <span style={{fontSize:11,fontWeight:800,color:"#991b1b",background:"#fee2e2",padding:"2px 9px",borderRadius:20,border:"1px solid #fca5a5",letterSpacing:"0.03em"}}>OUT OF SERVICE</span>}
-                                {!isOOS && dr.driverType==="owner_op" && <span style={{fontSize:11,fontWeight:700,color:"#7c3aed",background:"#ede9fe",padding:"2px 8px",borderRadius:20,border:"1px solid #c4b5fd"}}>O/O</span>}
-                                {!isOOS && (Array.isArray(dr.category)?dr.category:[dr.category||"crossborder"]).includes("local")&&(Array.isArray(dr.category)?dr.category:[dr.category]).includes("crossborder") && <span style={{fontSize:11,fontWeight:700,color:"#14532d",background:"#dcfce7",padding:"2px 8px",borderRadius:20,border:"1px solid #86efac"}}>+ Local</span>}
-                                {dr.partTime && <span style={{fontSize:11,fontWeight:600,color:"#d97706",background:"#fef3c7",padding:"2px 8px",borderRadius:20,border:"1px solid #fde68a"}}>PT</span>}
-                                {dr.worksDock && <span style={{fontSize:11,fontWeight:600,color:"#0891b2",background:"#e0f2fe",padding:"2px 8px",borderRadius:20,border:"1px solid #bae6fd"}}>Dock</span>}
-                                {dr.truckType==="straight" && <span style={{fontSize:11,fontWeight:700,color:"#b45309",background:"#fef3c7",padding:"2px 8px",borderRadius:20,border:"1px solid #fcd34d"}}>24 ft</span>}
-                              </div>
-                              {/* Lanes */}
-                              <div style={{flex:1,display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
-                                {(()=>{
-                                  const cats = Array.isArray(dr.category) ? dr.category : [dr.category||"crossborder"];
-                                  const isLocalOnly = cats.includes("local") && !cats.some(c=>["crossborder","local_tx","sprinter"].includes(c));
-                                  return isLocalOnly
-                                    ? <span style={{fontSize:11,fontWeight:700,color:"#14532d",background:"#dcfce7",padding:"2px 9px",borderRadius:20,border:"1px solid #86efac"}}>🍁 Ontario Only</span>
-                                    : (dr.lanes||[]).map(l=>(
-                                        <span key={l} style={{fontSize:11,fontWeight:600,color:accent,background:`${accent}12`,padding:"2px 8px",borderRadius:20,border:`1px solid ${accent}30`}}>{l}</span>
-                                      ));
-                                })()}
-                              </div>
-                              {/* OOS toggle */}
-                              <button onClick={async()=>{ await saveDriver({...dr,outOfService:!isOOS}); }}
-                                style={{padding:"4px 10px",background:isOOS?"#fee2e2":"#f1f5f9",color:isOOS?"#991b1b":C.muted,border:`1px solid ${isOOS?"#fca5a5":"#e2e8f0"}`,borderRadius:6,fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0}}>
-                                {isOOS ? "Restore" : "Out of Service"}
-                              </button>
-                              {/* Edit button */}
-                              <button onClick={()=>{ setEditingDriverId(dr.id); setEditDriverName(dr.name); setEditDriverDays(dr.departureDays||(dr.defaultDay!=null?[dr.defaultDay]:[])); setEditDriverType(dr.driverType||"company"); setEditDriverTruckType(dr.truckType||"semi"); setEditDriverCategory(Array.isArray(dr.category)?dr.category:[dr.category||"crossborder"]); setEditDriverOOS(!!dr.outOfService); setEditDriverPartTime(!!dr.partTime); setEditDriverDock(!!dr.worksDock); setEditDriverTruck(dr.truckNumber||""); setEditDriverLanes(dr.lanes||[]); }}
-                                style={{padding:"4px 12px",background:"#f1f5f9",color:C.navy,border:"1px solid #e2e8f0",borderRadius:6,fontSize:12,fontWeight:600,cursor:"pointer",flexShrink:0}}>
-                                Edit
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Add driver form */}
-                {driverFormOpen && (
-                  <div style={{padding:"16px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10}}>
-                    <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:14}}>
-                      <div>
-                        <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:6}}>Driver Name</div>
-                        <input value={newDriverName} onChange={e=>setNewDriverName(e.target.value)} placeholder="e.g. Mike Johnson"
-                          style={{...input,width:220,fontSize:13}}/>
-                      </div>
-                      <div>
-                        <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:6}}>Truck #</div>
-                        <input value={newDriverTruck} onChange={e=>setNewDriverTruck(e.target.value)} placeholder="e.g. 12"
-                          style={{...input,width:100,fontSize:13}}/>
-                      </div>
-                      <div>
-                        <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:6}}>Driver Type</div>
-                        <div style={{display:"flex",gap:6}}>
-                          {[["company","Company Driver"],["owner_op","Owner Operator"]].map(([v,l])=>(
-                            <button key={v} onClick={()=>setNewDriverType(v)}
-                              style={{padding:"6px 12px",fontSize:12,fontWeight:700,borderRadius:7,cursor:"pointer",border:`1.5px solid ${newDriverType===v?"#4f46e5":"#e2e8f0"}`,background:newDriverType===v?"#4f46e5":"#f8fafc",color:newDriverType===v?"#fff":"#64748b"}}>
-                              {l}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:6}}>Truck Type</div>
-                        <div style={{display:"flex",gap:6}}>
-                          {[["semi","Semi (53 ft)"],["straight","Straight Truck (24 ft)"]].map(([v,l])=>(
-                            <button key={v} onClick={()=>setNewDriverTruckType(v)}
-                              style={{padding:"6px 12px",fontSize:12,fontWeight:700,borderRadius:7,cursor:"pointer",border:`1.5px solid ${newDriverTruckType===v?"#4f46e5":"#e2e8f0"}`,background:newDriverTruckType===v?"#4f46e5":"#f8fafc",color:newDriverTruckType===v?"#fff":"#64748b"}}>
-                              {l}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:6}}>Category</div>
-                        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                          {[["crossborder","Cross-Border"],["local","Local"],["local_tx","Local Texas"],["sprinter","Sprinter"]].map(([v,l])=>{
-                            const on=(newDriverCategory||[]).includes(v);
-                            return (
-                              <button key={v} onClick={()=>setNewDriverCategory(prev=>{
-                                const arr=Array.isArray(prev)?prev:[prev||"crossborder"];
-                                return on?arr.filter(x=>x!==v):[...arr,v];
-                              })}
-                                style={{padding:"6px 12px",fontSize:12,fontWeight:700,borderRadius:7,cursor:"pointer",
-                                  border:`1.5px solid ${on?"#4f46e5":"#e2e8f0"}`,
-                                  background:on?"#4f46e5":"#f8fafc",
-                                  color:on?"#fff":"#64748b"}}>
-                                {l}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:6}}>Departure Days</div>
-                        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                          {DAYS.map((d,i)=>{
-                            const on=newDriverDays.includes(i);
-                            return (
-                              <button key={i} onClick={()=>setNewDriverDays(prev=>prev.includes(i)?prev.filter(x=>x!==i):[...prev,i])}
-                                style={{padding:"5px 10px",fontSize:12,fontWeight:700,borderRadius:7,cursor:"pointer",border:`1.5px solid ${on?"#4f46e5":"#e2e8f0"}`,background:on?"#4f46e5":"#f8fafc",color:on?"#fff":"#64748b"}}>
-                                {d.slice(0,3)}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <div style={{display:"flex",gap:14,marginTop:8}}>
-                          <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
-                            <input type="checkbox" checked={newDriverPartTime} onChange={e=>setNewDriverPartTime(e.target.checked)} style={{width:15,height:15,accentColor:"#4f46e5"}}/>
-                            <span style={{fontSize:12,fontWeight:600,color:C.text}}>Part Time</span>
-                          </label>
-                          <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
-                            <input type="checkbox" checked={newDriverDock} onChange={e=>setNewDriverDock(e.target.checked)} style={{width:15,height:15,accentColor:"#4f46e5"}}/>
-                            <span style={{fontSize:12,fontWeight:600,color:C.text}}>Works the Dock</span>
-                          </label>
-                        </div>
-                      </div>
-                    </div>
-                    {(newDriverCategory||[]).includes("local") && !(newDriverCategory||[]).some(c=>["crossborder","local_tx","sprinter"].includes(c)) ? (
-                      <div style={{marginBottom:14,padding:"10px 14px",background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,display:"flex",alignItems:"center",gap:8}}>
-                        <span style={{fontSize:16}}>🍁</span>
-                        <span style={{fontSize:13,fontWeight:700,color:"#14532d"}}>Ontario Only — no cross-border routes</span>
-                      </div>
-                    ) : (
-                    <div style={{marginBottom:14}}>
-                      <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:8}}>
-                        Preferred Lanes{(newDriverCategory||[]).includes("local_tx")&&!(newDriverCategory||[]).includes("crossborder")?" (Texas Only)":""}
-                      </div>
-                      <div style={{display:"flex",flexWrap:"wrap",gap:7}}>
-                        {RATE_CITIES.filter(c=>(newDriverCategory||[]).includes("local_tx")&&!(newDriverCategory||[]).includes("crossborder")?c.state==="TX":true).map(c => {
-                          const label = `${c.city}, ${c.state}`;
-                          const on = newDriverLanes.includes(label);
-                          return (
-                            <button key={label} onClick={()=>setNewDriverLanes(prev=>on?prev.filter(l=>l!==label):[...prev,label])}
-                              style={{padding:"5px 12px",fontSize:12,fontWeight:600,borderRadius:20,cursor:"pointer",transition:"all 0.15s",
-                                background:on?"#4f46e5":"#fff", color:on?"#fff":"#64748b",
-                                border:`1.5px solid ${on?"#4f46e5":"#cbd5e1"}`}}>
-                              {label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    )}
-                    <button onClick={async () => {
-                      if (!newDriverName.trim()) return;
-                      await saveDriver({id:`drv_${Date.now()}`,name:newDriverName.trim(),truckNumber:newDriverTruck.trim(),lanes:newDriverLanes,departureDays:newDriverDays,defaultDay:newDriverDays[0]??null,driverType:newDriverType,truckType:newDriverTruckType,category:newDriverCategory,partTime:newDriverPartTime,worksDock:newDriverDock});
-                      setNewDriverName(""); setNewDriverTruck(""); setNewDriverLanes([]); setNewDriverDays([]); setNewDriverPartTime(false); setNewDriverDock(false); setNewDriverType("company"); setNewDriverTruckType("semi"); setNewDriverCategory(["crossborder"]); setDriverFormOpen(false);
-                    }} style={{padding:"9px 20px",background:C.navy,color:"#fff",border:"none",borderRadius:7,fontSize:13,fontWeight:700,cursor:"pointer"}}>
-                      Save Driver
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              </>}
-
-              {capacityTab === "planner" && <>
-              {/* Weekly recurring schedule */}
-              <div style={{...card, marginBottom:20, padding:"18px 20px"}}>
-                <div style={{fontSize:15,fontWeight:700,color:C.navy,marginBottom:12}}>Weekly Schedule</div>
-                {recurringTrucks.length > 0 && (
-                  <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14}}>
-                    {recurringTrucks.map(rt => (
-                      <div key={rt.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 12px",background:"#eef2ff",border:"1px solid #c7d2fe",borderRadius:8}}>
-                        <span style={{fontSize:12,fontWeight:700,color:C.navy}}>{DAYS[rt.dayOfWeek]}</span>
-                        <span style={{fontSize:12,color:C.text}}>{rt.route}</span>
-                        {rt.driver && <span style={{fontSize:12,color:"#4f46e5",fontWeight:600}}>· {rt.driver}</span>}
-                        <span style={{fontSize:11,color:C.muted}}>×{rt.numTrucks}</span>
-                        <button onClick={()=>deleteRecurringTruck(rt.id)} style={{background:"none",border:"none",color:C.error,cursor:"pointer",fontSize:16,lineHeight:1,padding:"0 2px"}}>×</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
-                  <div>
-                    <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:4}}>Day of Week</div>
-                    <select value={newRecurDow} onChange={e=>setNewRecurDow(e.target.value)} style={{...input,width:140,fontSize:13}}>
-                      {DAYS.map((d,i) => <option key={i} value={i}>{d}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:4}}>Route / Destination</div>
-                    <AutocompleteInput
-                      value={newRecurRoute}
-                      onChange={setNewRecurRoute}
-                      placeholder="e.g. Tennessee"
-                      inputStyle={{...input, width:180, fontSize:13}}
-                      suggestions={RATE_CITIES.map(c=>`${c.city}, ${c.state}`)}
-                    />
-                  </div>
-                  <div>
-                    <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:4}}>Driver</div>
-                    <AutocompleteInput
-                      value={newRecurDriver}
-                      onChange={v => {
-                        setNewRecurDriver(v);
-                        const match = drivers.find(d => d.name.toLowerCase() === v.toLowerCase());
-                        if (match) {
-                          if (match.lanes?.length > 0) setNewRecurRoute(match.lanes[0]);
-                          if (match.defaultDay !== undefined) setNewRecurDow(String(match.defaultDay));
-                        }
-                      }}
-                      placeholder="Driver name"
-                      inputStyle={{...input, width:150, fontSize:13}}
-                      suggestions={drivers.map(d => d.name)}
-                    />
-                  </div>
-                  <div>
-                    <div style={{fontSize:11,fontWeight:700,color:C.subtle,textTransform:"uppercase",marginBottom:4}}>Trucks</div>
-                    <input type="number" min={1} max={20} value={newRecurCount} onChange={e=>setNewRecurCount(Math.max(1,parseInt(e.target.value)||1))}
-                      style={{...input,width:70,fontSize:13}}/>
-                  </div>
-                  <button onClick={async () => {
-                    if (!newRecurRoute.trim()) return;
-                    const rt = {id:`rt_${Date.now()}`,dayOfWeek:parseInt(newRecurDow),route:newRecurRoute.trim(),numTrucks:newRecurCount,driver:newRecurDriver.trim()};
-                    await saveRecurringTruck(rt);
-                    setNewRecurRoute(""); setNewRecurCount(1); setNewRecurDriver("");
-                  }} style={{padding:"10px 20px",background:C.navy,color:"#fff",border:"none",borderRadius:7,fontSize:13,fontWeight:700,cursor:"pointer"}}>
-                    + Add Weekly Truck
-                  </button>
-                </div>
-              </div>
-
-              {allTruckDays.length === 0 && boardLoads.length === 0 && (
-                <div style={{...card,textAlign:"center",padding:60,color:C.muted}}>
-                  <div style={{fontSize:36,marginBottom:12}}>🚛</div>
-                  <div style={{fontSize:18,fontWeight:700,color:C.navy,marginBottom:6}}>No capacity planned yet</div>
-                  <div style={{fontSize:14}}>Add a weekly truck above — loads auto-assign to the best matching route.</div>
-                </div>
-              )}
-
-              {/* Truck day cards */}
-              {allTruckDays.map(td => {
-                const trucks = truckSlots[td.id] || [];
-                const totalUsed = trucks.reduce((s,t)=>s+t.footage,0);
-                const totalCap  = td.numTrucks * TRUCK_FT;
-                const fillPct   = totalCap > 0 ? totalUsed/totalCap : 0;
-                const accentColor = fillPct>0.9?"#ef4444":fillPct>0.7?"#f59e0b":"#10b981";
-                const dateObj = new Date(td.date+"T12:00:00");
-                const dayName = dateObj.toLocaleDateString("en-CA",{weekday:"long"});
-                const dateLabel = dateObj.toLocaleDateString("en-CA",{month:"short",day:"numeric",year:"numeric"});
-                return (
-                  <div key={td.id} style={{marginBottom:24,borderRadius:16,overflow:"hidden",boxShadow:"0 2px 12px rgba(0,0,0,0.08)",border:"1px solid #e2e8f0"}}>
-                    {/* Header */}
-                    <div style={{background:`linear-gradient(135deg, ${C.navy} 0%, #1e3a5f 100%)`,padding:"16px 22px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
-                      <div style={{display:"flex",alignItems:"center",gap:16}}>
-                        <div style={{background:"rgba(255,255,255,0.1)",borderRadius:10,padding:"8px 14px",textAlign:"center",minWidth:56}}>
-                          <div style={{fontSize:10,fontWeight:700,color:"rgba(255,255,255,0.6)",textTransform:"uppercase",letterSpacing:"0.08em"}}>{dayName.slice(0,3)}</div>
-                          <div style={{fontSize:22,fontWeight:900,color:"#fff",lineHeight:1}}>{dateObj.getDate()}</div>
-                        </div>
-                        <div>
-                          <div style={{fontSize:16,fontWeight:800,color:"#fff"}}>{dayName}, {dateLabel}</div>
-                          <div style={{fontSize:12,color:"rgba(255,255,255,0.6)",marginTop:2,display:"flex",alignItems:"center",gap:8}}>
-                            <span>📍 {td.route}</span>
-                            {td.driver && <><span style={{opacity:0.4}}>·</span><span>🚛 {td.driver}</span></>}
-                            <span style={{opacity:0.4}}>·</span>
-                            <span>{td.numTrucks} truck{td.numTrucks>1?"s":""}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{display:"flex",alignItems:"center",gap:12}}>
-                        {/* Capacity pill */}
-                        <div style={{background:"rgba(255,255,255,0.08)",borderRadius:10,padding:"8px 14px",minWidth:130}}>
-                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
-                            <span style={{fontSize:11,color:"rgba(255,255,255,0.5)",fontWeight:600}}>CAPACITY</span>
-                            <span style={{fontSize:13,fontWeight:800,color:accentColor}}>{(fillPct*100).toFixed(0)}%</span>
-                          </div>
-                          <div style={{height:6,background:"rgba(255,255,255,0.12)",borderRadius:3,overflow:"hidden"}}>
-                            <div style={{height:"100%",width:`${Math.min(100,fillPct*100)}%`,background:accentColor,borderRadius:3,transition:"width 0.4s"}}/>
-                          </div>
-                          <div style={{fontSize:10,color:"rgba(255,255,255,0.4)",marginTop:4}}>{totalUsed.toFixed(0)} / {totalCap} ft used</div>
-                        </div>
-                        {/* Action buttons */}
-                        {td.isRecurring ? (
-                          <div style={{display:"flex",gap:6}}>
-                            <span style={{fontSize:11,color:"rgba(255,255,255,0.5)",background:"rgba(255,255,255,0.08)",padding:"6px 12px",borderRadius:8,fontWeight:600}}>Weekly</span>
-                            <button onClick={async()=>{
-                              const override={id:`td_override_${td.date}_${Date.now()}`,date:td.date,route:td.route,numTrucks:td.numTrucks,driver:td.driver||""};
-                              await saveTruckDay(override);
-                              setEditingTruckDayId(override.id); setEditTruckCount(override.numTrucks); setEditTruckRoute(override.route);
-                            }} style={{padding:"6px 14px",background:"rgba(251,191,36,0.15)",color:"#fbbf24",border:"1px solid rgba(251,191,36,0.35)",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer"}}>
-                              Override
-                            </button>
-                          </div>
-                        ) : editingTruckDayId === td.id ? (
-                          <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                            <input value={editTruckRoute} onChange={e=>setEditTruckRoute(e.target.value)} placeholder="Route"
-                              style={{padding:"6px 10px",background:"rgba(255,255,255,0.1)",color:"#fff",border:"1px solid rgba(255,255,255,0.25)",borderRadius:8,fontSize:12,width:130}}/>
-                            <input type="number" min={1} max={20} value={editTruckCount} onChange={e=>setEditTruckCount(Math.max(1,parseInt(e.target.value)||1))}
-                              style={{padding:"6px 8px",background:"rgba(255,255,255,0.1)",color:"#fff",border:"1px solid rgba(255,255,255,0.25)",borderRadius:8,fontSize:12,width:52}}/>
-                            <button onClick={async()=>{await saveTruckDay({...td,route:editTruckRoute,numTrucks:editTruckCount});setEditingTruckDayId(null);}}
-                              style={{padding:"6px 12px",background:"#22c55e",color:"#fff",border:"none",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer"}}>Save</button>
-                            <button onClick={()=>setEditingTruckDayId(null)}
-                              style={{padding:"6px 10px",background:"rgba(255,255,255,0.08)",color:"#fff",border:"1px solid rgba(255,255,255,0.15)",borderRadius:8,fontSize:12,cursor:"pointer"}}>✕</button>
-                          </div>
-                        ) : (
-                          <div style={{display:"flex",gap:6}}>
-                            <button onClick={()=>{setEditingTruckDayId(td.id);setEditTruckCount(td.numTrucks);setEditTruckRoute(td.route);}}
-                              style={{padding:"6px 14px",background:"rgba(255,255,255,0.1)",color:"#fff",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,fontSize:12,fontWeight:600,cursor:"pointer"}}>Edit</button>
-                            <button onClick={()=>deleteTruckDay(td.id)}
-                              style={{padding:"6px 14px",background:"rgba(239,68,68,0.15)",color:"#fca5a5",border:"1px solid rgba(239,68,68,0.3)",borderRadius:8,fontSize:12,fontWeight:600,cursor:"pointer"}}>Remove</button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Truck slots */}
-                    <div style={{background:"#f8fafc",padding:"16px 20px"}}>
-                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
-                        {trucks.map(truck => {
-                          const slotFill = truck.footage / TRUCK_FT;
-                          const slotColor = slotFill>0.9?"#ef4444":slotFill>0.7?"#f59e0b":"#10b981";
-                          const isEmpty = truck.loads.length === 0;
-                          return (
-                            <div key={truck.num} style={{borderRadius:12,overflow:"hidden",background:"#fff",boxShadow:"0 1px 6px rgba(0,0,0,0.06)",border:`1px solid ${isEmpty?"#e8edf2":slotFill>0.9?"#fecaca":slotFill>0.7?"#fde68a":"#bbf7d0"}`}}>
-                              {/* Slot header */}
-                              <div style={{padding:"10px 14px",background:isEmpty?"#f1f5f9":`linear-gradient(135deg,${C.navy},#1e3a5f)`,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
-                                <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
-                                  <span style={{fontSize:16}}>🚛</span>
-                                  <AutocompleteInput
-                                    value={slotDrivers[`${td.id}:${truck.num}`] ?? (td.driver || "")}
-                                    onChange={val=>{
-                                      const key=`${td.id}:${truck.num}`;
-                                      setSlotDrivers(prev=>{const next={...prev,[key]:val};window.storage.set("bdr_slot_drivers",JSON.stringify(next));return next;});
-                                    }}
-                                    suggestions={drivers.filter(d=>!d.outOfService).map(d=>d.name)}
-                                    placeholder={`Truck ${truck.num}`}
-                                    inputStyle={{fontSize:13,fontWeight:700,background:"transparent",border:"none",borderBottom:`1px solid ${isEmpty?"#cbd5e1":"rgba(255,255,255,0.3)"}`,color:isEmpty?C.subtle:"#fff",outline:"none",width:"100%",padding:"2px 0"}}
-                                  />
-                                </div>
-                                <span style={{fontSize:11,fontWeight:600,color:isEmpty?C.subtle:"rgba(255,255,255,0.6)",whiteSpace:"nowrap",background:isEmpty?"#e2e8f0":"rgba(255,255,255,0.1)",padding:"2px 8px",borderRadius:20}}>
-                                  {truck.loads.length} load{truck.loads.length!==1?"s":""}
-                                </span>
-                              </div>
-                              {/* Capacity bar */}
-                              <div style={{padding:"10px 14px 0"}}>
-                                <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4}}>
-                                  <span style={{fontSize:11,color:C.muted}}>{truck.footage.toFixed(0)} / {TRUCK_FT} ft</span>
-                                  <span style={{fontSize:12,fontWeight:700,color:slotColor}}>{(slotFill*100).toFixed(0)}%</span>
-                                </div>
-                                <div style={{height:6,background:"#f1f5f9",borderRadius:3,overflow:"hidden",marginBottom:isEmpty?10:0}}>
-                                  <div style={{height:"100%",width:`${Math.min(100,slotFill*100)}%`,background:slotColor,borderRadius:3,transition:"width 0.4s"}}/>
-                                </div>
-                              </div>
-                              {/* Loads */}
-                              {isEmpty ? (
-                                <div style={{padding:"14px",textAlign:"center",color:C.subtle,fontSize:12}}>Empty — ready to load</div>
-                              ) : (
-                                <div style={{padding:"10px 14px 14px",display:"flex",flexDirection:"row",flexWrap:"wrap",gap:8}}>
-                                  {truck.loads.map(load => {
-                                    const confirmed = load.outcome==="received";
-                                    const isEditing = editingTruckDayId === td.id;
-                                    return (
-                                      <div key={load.timestamp} style={{
-                                        flex:"1 1 220px",
-                                        padding:"10px 12px",
-                                        background:confirmed?"#f0fdf4":"#faf5ff",
-                                        borderRadius:10,
-                                        border:`1px solid ${confirmed?"#bbf7d0":"#ddd6fe"}`,
-                                        borderLeft:`4px solid ${confirmed?C.green:"#7c3aed"}`,
-                                      }}>
-                                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
-                                          <div style={{fontSize:13,fontWeight:700,color:C.navy}}>{load.dest_city}, {load.dest_state}</div>
-                                          <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                                            {!confirmed && <span style={{fontSize:10,fontWeight:700,color:"#7c3aed",background:"#ede9fe",padding:"2px 6px",borderRadius:20}}>Incoming</span>}
-                                            {isFTL(load) && <span style={{fontSize:10,fontWeight:700,color:"#7c3aed",background:"#ede9fe",padding:"2px 6px",borderRadius:20}}>FTL</span>}
-                                            {isEditing && (
-                                              <button onClick={()=>toggleTruckExclusion(td.id,load.timestamp)}
-                                                style={{padding:"2px 7px",background:"#fee2e2",color:"#dc2626",border:"1px solid #fca5a5",borderRadius:20,fontSize:11,fontWeight:700,cursor:"pointer"}}>✕</button>
-                                            )}
-                                          </div>
-                                        </div>
-                                        <div style={{display:"flex",flexWrap:"wrap",gap:"3px 12px",fontSize:11}}>
-                                          {!isFTL(load)&&<span><span style={{color:C.subtle}}>Skids </span><span style={{fontWeight:600,color:C.text}}>{load.skids||"—"}</span></span>}
-                                          <span><span style={{color:C.subtle}}>Footage </span><span style={{fontWeight:700,color:C.amber}}>{load._ft} ft</span></span>
-                                          <span><span style={{color:C.subtle}}>Customer </span><span style={{fontWeight:600,color:C.text}}>{load.broker_name||"—"}</span></span>
-                                          <span><span style={{color:C.subtle}}>Consignee </span><span style={{color:C.text}}>{load.consignee||"—"}</span></span>
-                                          <span><span style={{color:C.subtle}}>Deliver by </span><span style={{color:C.text}}>{load.delivery_date||"—"}</span></span>
-                                          {load.delivery_address&&<span style={{width:"100%"}}><span style={{color:C.subtle}}>Address </span><span style={{color:C.text}}>{load.delivery_address}</span></span>}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* Unassigned loads */}
-              {unassigned.length > 0 && (
-                <div style={{...card,padding:0,overflow:"hidden"}}>
-                  <div style={{padding:"12px 20px",background:"#fffbeb",borderBottom:`1px solid #fde68a`}}>
-                    <div style={{fontSize:14,fontWeight:700,color:"#92400e"}}>⏳ Unassigned Loads ({unassigned.length})</div>
-                    <div style={{fontSize:12,color:"#a16207",marginTop:2}}>No truck route matches these destinations. Add a truck going to those states above.</div>
-                  </div>
-                  <div style={{padding:"12px 20px",display:"flex",flexDirection:"column",gap:6}}>
-                    {unassigned.map(load => (
-                      <div key={load.timestamp} style={{display:"flex",alignItems:"center",gap:16,padding:"8px 12px",background:"#f8fafc",borderRadius:6,flexWrap:"wrap",
-                        borderLeft:`3px ${load.outcome==="received"?"solid":"dashed"} ${load.outcome==="received"?C.green:"#7c3aed"}`}}>
-                        <span style={{fontSize:12,fontWeight:600,color:C.navy,minWidth:80}}>{load.pickup_date||load.date}</span>
-                        <span style={{fontSize:12,color:C.text}}>{load.origin} → {load.dest_city}, {load.dest_state}</span>
-                        <span style={{fontSize:12,color:C.muted}}>{load.skids} skids · {getFootage(load)} ft</span>
-                        <span style={{fontSize:12,color:C.muted}}>{load.broker_name}</span>
-                        {load.outcome==="broker_sending" && <span style={{fontSize:11,fontWeight:700,color:"#7c3aed",background:"#ede9fe",padding:"1px 6px",borderRadius:4}}>Incoming</span>}
-                        <span style={{fontSize:13,fontWeight:700,color:C.amber,marginLeft:"auto"}}>${r5(load.total)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              </>}
-            </div>
-          );
-        })()
 
       ) : (
       <>
@@ -4295,18 +3307,18 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <input type="file" accept="application/pdf" style={{ display:"none" }}
                     onChange={e => { if (e.target.files[0]) handlePDFUpload(e.target.files[0]); e.target.value=""; }}
                   />
-                  <div style={{ border:`2px dashed ${pdfLoading?"#6366f1":"#c7d2fe"}`, borderRadius:10, padding:"18px 20px", background:pdfLoading?"#eef2ff":"#f5f7ff",
+                  <div style={{ border:`2px dashed ${pdfLoading?C.amber:"#e3c9d1"}`, borderRadius:10, padding:"18px 20px", background:pdfLoading?C.amberLight:"#f7f4ee",
                     display:"flex", alignItems:"center", gap:14, transition:"all 0.2s" }}>
                     <div style={{ fontSize:28, lineHeight:1 }}>{pdfLoading ? "⏳" : "📄"}</div>
                     <div>
-                      <div style={{ fontSize:13, fontWeight:700, color:pdfLoading?"#4f46e5":C.navy }}>
+                      <div style={{ fontSize:13, fontWeight:700, color:pdfLoading?C.amber:C.navy }}>
                         {pdfLoading ? "Reading PDF…" : "Upload PDF (rate confirmation, load tender, BOL)"}
                       </div>
                       <div style={{ fontSize:12, color:C.muted, marginTop:2 }}>
                         {pdfLoading ? "Claude is extracting shipment details" : "Click to browse or drop a file — Claude reads it automatically"}
                       </div>
                     </div>
-                    {!pdfLoading && <div style={{ marginLeft:"auto", padding:"6px 16px", background:"#4f46e5", color:"#fff", borderRadius:7, fontSize:12, fontWeight:700 }}>Browse</div>}
+                    {!pdfLoading && <div style={{ marginLeft:"auto", padding:"6px 16px", background:C.amber, color:"#fff", borderRadius:7, fontSize:12, fontWeight:700 }}>Browse</div>}
                   </div>
                 </label>
 
@@ -4322,7 +3334,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                 />
                 {error && <div style={{ marginTop:10, padding:"10px 14px", background:C.errorLight, border:`1px solid #fca5a5`, borderRadius:8, color:C.error, fontSize:14 }}>⚠ {error}</div>}
                 <button onClick={handleParse} disabled={loading||!email.trim()}
-                  style={{ marginTop:14, padding:"12px 28px", background:loading||!email.trim()?"#cbd5e1":C.amber, color:"#fff", border:"none", borderRadius:8, fontSize:15, fontWeight:700, cursor:loading||!email.trim()?"not-allowed":"pointer", display:"flex", alignItems:"center", gap:8 }}>
+                  style={{ marginTop:14, padding:"12px 28px", background:loading||!email.trim()?"#d9d0c2":C.amber, color:"#fff", border:"none", borderRadius:8, fontSize:15, fontWeight:700, cursor:loading||!email.trim()?"not-allowed":"pointer", display:"flex", alignItems:"center", gap:8 }}>
                   {loading ? <><span style={{ display:"inline-block", animation:"spin 0.8s linear infinite" }}>⟳</span> Parsing email…</> : "Parse Email →"}
                 </button>
               </div>
@@ -4362,7 +3374,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     setQuoteText(quoteTexts[i] || "");
                   }} style={{
                     padding:"8px 16px", borderRadius:8, cursor:"pointer", fontSize:13, fontWeight:activeIdx===i?700:400,
-                    background: activeIdx===i ? C.navy : "#f1f5f9",
+                    background: activeIdx===i ? C.navy : "#efe8dc",
                     color: activeIdx===i ? "#fff" : C.muted,
                     border: `1.5px solid ${activeIdx===i ? C.navy : C.border}`,
                     display:"flex", alignItems:"center", gap:8,
@@ -4380,14 +3392,13 @@ Be concise and actionable. When asked for recommendations, be specific about whi
               <div>
                 {/* Matched customer banner */}
                 {matchedCustomer && (
-                  <div style={{ ...card, background:"#f0f4ff", border:`1px solid #c7d4f5`, padding:"12px 18px", display:"flex", alignItems:"center", gap:16, marginBottom:12 }}>
+                  <div style={{ ...card, background:C.amberLight, border:`1px solid #e3c9d1`, padding:"12px 18px", display:"flex", alignItems:"center", gap:16, marginBottom:12 }}>
                     <div style={{ fontSize:20 }}>👥</div>
                     <div style={{ flex:1 }}>
                       <div style={{ fontSize:13, fontWeight:700, color:C.navy }}>{matchedCustomer.company}</div>
                       <div style={{ fontSize:12, color:C.muted }}>{matchedCustomer.contact_name}{matchedCustomer.email ? ` · ${matchedCustomer.email}` : ""}{matchedCustomer.notes ? ` · ${matchedCustomer.notes}` : ""}</div>
                     </div>
                     <div style={{ fontSize:12, color:C.muted }}>FSC pre-set to {(matchedCustomer.default_fsc*100).toFixed(0)}%</div>
-                    <button onClick={()=>setTab("customers")} style={{ fontSize:12, padding:"4px 12px", background:"transparent", border:`1px solid #c7d4f5`, borderRadius:6, cursor:"pointer", color:C.navy }}>View Profile</button>
                   </div>
                 )}
 
@@ -4430,7 +3441,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       <div style={{ overflowX:"auto", marginBottom:12 }}>
                         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
                           <thead>
-                            <tr style={{ background:"#f1f5f9" }}>
+                            <tr style={{ background:"#efe8dc" }}>
                               {["Skids","L (in)","W (in)","H (in)","Stack high","Divisor","Raw ft","Net ft"].map(h => (
                                 <th key={h} style={{ padding:"7px 10px", textAlign:"center", fontWeight:600, color:C.muted, border:`1px solid ${C.border}`, whiteSpace:"nowrap" }}>{h}</th>
                               ))}
@@ -4470,7 +3481,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                             const db = calcDimBasis(parsed.line_items);
                             return db ? (
                               <tfoot>
-                                <tr style={{ background: rateResult?.basisLabel==="dimensions" ? C.amberLight : "#f8f9fb" }}>
+                                <tr style={{ background: rateResult?.basisLabel==="dimensions" ? C.amberLight : "#f7f4ee" }}>
                                   <td colSpan={6} style={{ padding:"7px 10px", border:`1px solid ${C.border}`, fontWeight:600, color:C.muted, textAlign:"right" }}>Total</td>
                                   <td style={{ padding:"7px 10px", border:`1px solid ${C.border}`, fontWeight:700, color:C.navy, textAlign:"center" }}>{db.totalFt} ft</td>
                                   <td style={{ padding:"7px 10px", border:`1px solid ${C.border}`, fontWeight:700, color:C.amber, textAlign:"center" }}>{db.effSkids} eff. skids</td>
@@ -4487,7 +3498,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     {parsed.line_items?.length === 1 && (() => {
                       const db = calcDimBasis(parsed.line_items);
                       return db ? (
-                        <div style={{ padding:"9px 14px", background: rateResult?.basisLabel==="dimensions" ? C.amberLight : "#f8f9fb", border:`1px solid ${rateResult?.basisLabel==="dimensions" ? C.amber : C.border}`, borderRadius:8, fontSize:13 }}>
+                        <div style={{ padding:"9px 14px", background: rateResult?.basisLabel==="dimensions" ? C.amberLight : "#f7f4ee", border:`1px solid ${rateResult?.basisLabel==="dimensions" ? C.amber : C.border}`, borderRadius:8, fontSize:13 }}>
                           <span style={{ fontWeight:600, color: rateResult?.basisLabel==="dimensions" ? C.amber : C.muted }}>📐 </span>
                           ({db.lines[0].L}" × {db.lines[0].skids} skids) ÷ {db.lines[0].divisor}{db.lines[0].stackH > 1 ? ` ÷ ${db.lines[0].stackH} (stack)` : ""} = <strong>{db.totalFt} ft → {db.effSkids} effective skids</strong>
                           {rateResult?.basisLabel==="dimensions" ? <span style={{ color:C.amber }}> ← charging this</span> : <span style={{ color:C.subtle }}> (skid count or weight is higher)</span>}
@@ -4628,12 +3639,12 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     <div style={{ overflowX:"auto" }}>
                       <table style={{ borderCollapse:"collapse", fontSize:13, width:"100%" }}>
                         <thead>
-                          <tr style={{ background:"#f1f5f9" }}>
+                          <tr style={{ background:"#efe8dc" }}>
                             {SKID_LABELS.map((l,i) => {
                               const isCharge = i === rateResult.chargeIdx;
                               const isSkid   = i === rateResult.skidIdx && rateResult.skidIdx !== rateResult.chargeIdx;
                               return <th key={l} style={{ padding:"6px 8px", textAlign:"center", fontWeight:600, whiteSpace:"nowrap", border:`1px solid ${C.border}`,
-                                background: isCharge ? C.navy : isSkid ? "#e8e8e8" : "#f1f5f9",
+                                background: isCharge ? C.navy : isSkid ? "#e8e8e8" : "#efe8dc",
                                 color: isCharge ? "#fff" : C.muted }}>
                                 {l}{isCharge && rateResult.basisLabel==="weight" ? " ⚖" : ""}
                               </th>;
@@ -4662,7 +3673,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <div style={{ fontSize:16, fontWeight:700, color:C.navy, marginBottom:14 }}>Fuel Surcharge</div>
                   <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
                     {FSC_OPTS.map(o => (
-                      <button key={o.v} onClick={()=>setFsc(o.v)} style={{ padding:"9px 18px", fontSize:14, fontWeight:fsc===o.v?700:400, borderRadius:8, cursor:"pointer", background:fsc===o.v?C.navy:"#f1f5f9", color:fsc===o.v?"#fff":C.text, border:`1.5px solid ${fsc===o.v?C.navy:C.border}` }}>
+                      <button key={o.v} onClick={()=>setFsc(o.v)} style={{ padding:"9px 18px", fontSize:14, fontWeight:fsc===o.v?700:400, borderRadius:8, cursor:"pointer", background:fsc===o.v?C.navy:"#efe8dc", color:fsc===o.v?"#fff":C.text, border:`1.5px solid ${fsc===o.v?C.navy:C.border}` }}>
                         {o.l}
                       </button>
                     ))}
@@ -4674,7 +3685,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <div style={{ fontSize:16, fontWeight:700, color:C.navy, marginBottom:14 }}>Accessorials</div>
                   <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
                     {ACC_OPTS.map(a => (
-                      <button key={a.id} onClick={()=>setAccs(p=>({...p,[a.id]:!p[a.id]}))} style={{ padding:"9px 18px", fontSize:14, borderRadius:8, cursor:"pointer", fontWeight:accs[a.id]?600:400, background:accs[a.id]?"#eff6ff":"#f1f5f9", color:accs[a.id]?"#1d4ed8":C.text, border:`1.5px solid ${accs[a.id]?"#93c5fd":C.border}` }}>
+                      <button key={a.id} onClick={()=>setAccs(p=>({...p,[a.id]:!p[a.id]}))} style={{ padding:"9px 18px", fontSize:14, borderRadius:8, cursor:"pointer", fontWeight:accs[a.id]?600:400, background:accs[a.id]?C.navy:"#efe8dc", color:accs[a.id]?"#fff":C.text, border:`1.5px solid ${accs[a.id]?C.navy:C.border}` }}>
                         {a.l} <span style={{ color:C.subtle, fontWeight:400, fontSize:12 }}>({a.n})</span>
                       </button>
                     ))}
@@ -4684,10 +3695,10 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
                 {/* Generate Quote button */}
                 <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                  <button onClick={handleQuote} disabled={geocoding||!base} style={{ padding:"14px 28px", fontSize:15, fontWeight:700, borderRadius:8, cursor:"pointer", background:geocoding||!base?"#cbd5e1":C.navy, color:"#fff", border:"none", width:"100%" }}>
+                  <button onClick={handleQuote} disabled={geocoding||!base} style={{ padding:"14px 28px", fontSize:15, fontWeight:700, borderRadius:8, cursor:"pointer", background:geocoding||!base?"#d9d0c2":C.navy, color:"#fff", border:"none", width:"100%" }}>
                     {geocoding ? "Resolving location…" : "Generate Quote →"}
                   </button>
-                  <button onClick={()=>{setStep("input");setError(null);}} style={{ padding:"11px 22px", fontSize:14, borderRadius:8, cursor:"pointer", background:"#f1f5f9", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500, width:"100%" }}>
+                  <button onClick={()=>{setStep("input");setError(null);}} style={{ padding:"11px 22px", fontSize:14, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500, width:"100%" }}>
                     ← Back
                   </button>
                   {error && <div style={{ fontSize:14, color:C.error }}>⚠ {error}</div>}
@@ -4711,15 +3722,15 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   try { document.execCommand("copy"); } catch(e) {}
                   document.body.removeChild(ta);
                   setAllCopied(true); setTimeout(()=>setAllCopied(false),2500);
-                }} style={{ padding:"13px 24px", fontSize:15, fontWeight:700, borderRadius:8, cursor:"pointer", background:allCopied?C.green:"#1d4ed8", color:"#fff", border:"none", transition:"background 0.3s" }}>
+                }} style={{ padding:"13px 24px", fontSize:15, fontWeight:700, borderRadius:8, cursor:"pointer", background:allCopied?C.green:C.amber, color:"#fff", border:"none", transition:"background 0.3s" }}>
                   {allCopied ? "✓ All Copied!" : `Copy All ${quoteTexts.filter((qt,i) => qt && !allShipmentRates[i]?.unserviced).length} Quotes`}
                 </button>
               )}
-              <button onClick={()=>{setStep("review");setError(null);}} style={{ padding:"12px 22px", fontSize:15, borderRadius:8, cursor:"pointer", background:"#f1f5f9", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500 }}>
+              <button onClick={()=>{setStep("review");setError(null);}} style={{ padding:"12px 22px", fontSize:15, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500 }}>
                 ← Adjust
               </button>
               <button onClick={()=>{ setStep("input"); setEmail(""); setParsed(null); setShipments([]); setRateCity(null); setRateResult(null); setQuoteText(""); setQuoteTexts([]); setAllShipmentRates([]); setError(null); }}
-                style={{ padding:"12px 22px", fontSize:15, borderRadius:8, cursor:"pointer", background:"#f1f5f9", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500 }}>
+                style={{ padding:"12px 22px", fontSize:15, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500 }}>
                 New Quote
               </button>
             </div>
@@ -4762,7 +3773,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   ) : (
                     <>
                       <textarea value={qt} onChange={e=>{ setQuoteTexts(prev=>{ const u=[...prev]; u[i]=e.target.value; if(i===activeIdx) setQuoteText(e.target.value); return u; }); }}
-                        style={{ ...input, height:260, resize:"vertical", lineHeight:1.75, fontFamily:"'Courier New', monospace", fontSize:13, background:"#f8f9fb" }}
+                        style={{ ...input, height:260, resize:"vertical", lineHeight:1.75, fontFamily:"'Courier New', monospace", fontSize:13, background:"#f7f4ee" }}
                       />
                       <button onClick={()=>{
                         const ta = document.createElement("textarea"); ta.value = qt;
@@ -4791,7 +3802,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
         {/* Chat panel */}
         {agentOpen && (
-          <div style={{ width:380, height:520, background:"#fff", borderRadius:16, boxShadow:"0 8px 40px rgba(0,0,0,0.18)", display:"flex", flexDirection:"column", overflow:"hidden", border:"1px solid #e2e8f0" }}>
+          <div style={{ width:380, height:520, background:"#fff", borderRadius:16, boxShadow:"0 8px 40px rgba(0,0,0,0.18)", display:"flex", flexDirection:"column", overflow:"hidden", border:"1px solid #e7dfd2" }}>
             {/* Header */}
             <div style={{ background:C.navy, padding:"14px 18px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -4822,7 +3833,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:16 }}>
                     {["What loads are on the board?","Which driver fits this week's loads?","Scan inbox for new load sheets","Any capacity issues I should know about?"].map(s=>(
                       <button key={s} onClick={()=>{ setAgentInput(""); callAgent(s); }}
-                        style={{ padding:"7px 12px", background:"#f8fafc", border:"1px solid #e2e8f0", borderRadius:8, fontSize:12, fontWeight:600, color:C.navy, cursor:"pointer", textAlign:"left" }}>
+                        style={{ padding:"7px 12px", background:"#f7f4ee", border:"1px solid #e7dfd2", borderRadius:8, fontSize:12, fontWeight:600, color:C.navy, cursor:"pointer", textAlign:"left" }}>
                         {s}
                       </button>
                     ))}
@@ -4844,7 +3855,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   if (!text) return null;
                   return (
                     <div key={i} style={{ display:"flex", justifyContent:"flex-start" }}>
-                      <div style={{ maxWidth:"85%", background:"#f1f5f9", color:C.text, borderRadius:"14px 14px 14px 4px", padding:"9px 13px", fontSize:13, lineHeight:1.6, whiteSpace:"pre-wrap" }}>
+                      <div style={{ maxWidth:"85%", background:"#efe8dc", color:C.text, borderRadius:"14px 14px 14px 4px", padding:"9px 13px", fontSize:13, lineHeight:1.6, whiteSpace:"pre-wrap" }}>
                         {text}
                       </div>
                     </div>
@@ -4854,7 +3865,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
               })}
               {agentLoading && (
                 <div style={{ display:"flex", justifyContent:"flex-start" }}>
-                  <div style={{ background:"#f1f5f9", borderRadius:"14px 14px 14px 4px", padding:"9px 14px", display:"flex", gap:5, alignItems:"center" }}>
+                  <div style={{ background:"#efe8dc", borderRadius:"14px 14px 14px 4px", padding:"9px 14px", display:"flex", gap:5, alignItems:"center" }}>
                     {[0,1,2].map(i=><div key={i} style={{ width:7, height:7, borderRadius:"50%", background:C.muted, animation:"bounce 1.2s infinite", animationDelay:`${i*0.2}s` }}/>)}
                   </div>
                 </div>
@@ -4862,19 +3873,19 @@ Be concise and actionable. When asked for recommendations, be specific about whi
             </div>
 
             {/* Input */}
-            <div style={{ padding:"10px 12px", borderTop:"1px solid #e2e8f0", display:"flex", gap:8 }}>
+            <div style={{ padding:"10px 12px", borderTop:"1px solid #e7dfd2", display:"flex", gap:8 }}>
               <input
                 value={agentInput}
                 onChange={e=>setAgentInput(e.target.value)}
                 onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey&&agentInput.trim()){ e.preventDefault(); const msg=agentInput.trim(); setAgentInput(""); callAgent(msg); }}}
                 placeholder="Ask about loads, trucks, drivers…"
                 disabled={agentLoading}
-                style={{ flex:1, padding:"9px 12px", border:"1px solid #e2e8f0", borderRadius:10, fontSize:13, outline:"none", background: agentLoading?"#f8fafc":"#fff" }}
+                style={{ flex:1, padding:"9px 12px", border:"1px solid #e7dfd2", borderRadius:10, fontSize:13, outline:"none", background: agentLoading?"#f7f4ee":"#fff" }}
               />
               <button
                 onClick={()=>{ const msg=agentInput.trim(); if(msg){ setAgentInput(""); callAgent(msg); }}}
                 disabled={agentLoading||!agentInput.trim()}
-                style={{ padding:"9px 14px", background: agentLoading||!agentInput.trim()?"#e2e8f0":C.amber, color:"#fff", border:"none", borderRadius:10, fontSize:13, fontWeight:700, cursor: agentLoading||!agentInput.trim()?"not-allowed":"pointer" }}>
+                style={{ padding:"9px 14px", background: agentLoading||!agentInput.trim()?"#e7dfd2":C.amber, color:"#fff", border:"none", borderRadius:10, fontSize:13, fontWeight:700, cursor: agentLoading||!agentInput.trim()?"not-allowed":"pointer" }}>
                 ↑
               </button>
             </div>
