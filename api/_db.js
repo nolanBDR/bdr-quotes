@@ -2,11 +2,21 @@ import { neon } from "@neondatabase/serverless";
 
 const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL;
 
-if (!connectionString) {
-  console.error("Missing POSTGRES_URL/DATABASE_URL env var — API calls touching the database will fail.");
+// neon() validates the connection string immediately and throws if it's missing —
+// calling it at module load time would crash the whole function on import
+// (Vercel reports this as a generic FUNCTION_INVOCATION_FAILED, before any
+// handler's try/catch gets a chance to run). Building it lazily means a missing
+// env var surfaces as a normal, catchable error inside the request handler instead.
+let _sql = null;
+function getSql() {
+  if (!connectionString) {
+    throw new Error("Missing POSTGRES_URL/DATABASE_URL env var — set it in the Vercel project's environment variables.");
+  }
+  if (!_sql) _sql = neon(connectionString);
+  return _sql;
 }
 
-export const sql = neon(connectionString);
+export const sql = (...args) => getSql()(...args);
 
 let schemaReady = null;
 
