@@ -1,6 +1,5 @@
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = process.env.RESEND_FROM || "BDR Quotes <quotes@bdrint.ca>";
 
 export async function sendEmail({ to, subject, html }) {
@@ -9,6 +8,9 @@ export async function sendEmail({ to, subject, html }) {
     return { ok: false, error: "missing_resend_key" };
   }
   try {
+    // Constructed lazily — `new Resend()` throws immediately on a missing key,
+    // and doing that at module load would crash the whole function on import.
+    const resend = new Resend(process.env.RESEND_API_KEY);
     const { data, error } = await resend.emails.send({ from: FROM, to, subject, html });
     if (error) { console.error("Resend send failed", error); return { ok: false, error }; }
     return { ok: true, id: data?.id };
