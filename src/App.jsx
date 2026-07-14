@@ -2,7 +2,6 @@
 import { CUSTOMER_PROFILES } from "./customerProfiles.js";
 
 const ANTHROPIC_KEY   = (() => { try { return import.meta.env.VITE_ANTHROPIC_KEY  || ""; } catch(e) { return ""; } })();
-const GOOGLE_CLIENT_ID = (() => { try { return import.meta.env.VITE_GOOGLE_CLIENT_ID || ""; } catch(e) { return ""; } })();
 
 // Polyfill window.storage with localStorage when running outside Claude preview
 if (!window.storage) {
@@ -732,6 +731,16 @@ function cleanJson(str) {
 
 const FSC_OPTS = [{v:0,l:"None"},{v:0.08,l:"8%"},{v:0.15,l:"15%"},{v:0.18,l:"18%"},{v:0.20,l:"20%"},{v:0.30,l:"30%"},{v:0.40,l:"40%"}];
 const ACC_OPTS = [{id:"da",l:"Driver Assist",n:"from $75"},{id:"lg",l:"Liftgate",n:"from $75"},{id:"nc",l:"No Crossdock",n:"from $150"},{id:"fl",l:"Floorload",n:"+10% markup"},{id:"st",l:"Straight Truck",n:"$100"}];
+const DIRECTION_OPTS = [{v:"outbound",l:"Outbound (ON/QC → US)"},{v:"inbound",l:"Inbound (US → ON/QC)"}];
+
+// BDR's own signature — quotes are signed with this regardless of who fills the form.
+const BDR_SIGNATURE = { name: "Nolan Giesbrecht", company: "BDR International Ltd", phone: "519-469-9361 ext 113" };
+
+function routeQuoteEmail(dest_state, direction) {
+  if (dest_state === "TX") return "texas@bdrint.ca";
+  if ((direction || "outbound") === "inbound") return "inbound@bdrint.ca";
+  return "outbound@bdrint.ca";
+}
 
 // ── Design tokens — BDR International branding (colours pulled from bdrint.ca) ──
 const C = {
@@ -757,75 +766,6 @@ const C = {
 const input = { width:"100%", boxSizing:"border-box", padding:"10px 14px", fontSize:14, border:`1px solid ${C.border}`, borderRadius:4, color:C.text, background:"#fff", outline:"none", fontFamily:"inherit" };
 const label = { display:"block", fontSize:12, fontWeight:600, color:"#444", marginBottom:5, letterSpacing:"0.02em" };
 const card  = { background:"#fff", border:`1px solid ${C.border}`, borderRadius:6, padding:24, marginBottom:16, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" };
-
-// ── Gmail helpers ─────────────────────────────────────────────
-function getEmailBody(payload) {
-  if (!payload) return "";
-  if (payload.body?.data) {
-    try { return decodeURIComponent(escape(atob(payload.body.data.replace(/-/g,"+").replace(/_/g,"/")))); } catch(e) { return ""; }
-  }
-  if (payload.parts) {
-    for (const p of payload.parts) {
-      if (p.mimeType === "text/plain" && p.body?.data) {
-        try { return decodeURIComponent(escape(atob(p.body.data.replace(/-/g,"+").replace(/_/g,"/")))); } catch(e) {}
-      }
-    }
-    for (const p of payload.parts) { const b = getEmailBody(p); if (b) return b; }
-  }
-  return "";
-}
-
-function hasPdfAttachment(payload) {
-  if (!payload) return false;
-  for (const part of (payload.parts || [])) {
-    if (part.mimeType === "application/pdf" || (part.filename || "").toLowerCase().endsWith(".pdf")) return true;
-    if (part.parts && hasPdfAttachment(part)) return true;
-  }
-  return false;
-}
-
-function getPdfAttachmentPart(payload) {
-  if (!payload) return null;
-  for (const part of (payload.parts || [])) {
-    if (part.mimeType === "application/pdf" || (part.filename || "").toLowerCase().endsWith(".pdf")) return part;
-    const nested = getPdfAttachmentPart(part);
-    if (nested) return nested;
-  }
-  return null;
-}
-
-async function fetchGmailPdfBase64(token, messageId, attachmentId) {
-  const res = await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const data = await res.json();
-  // Gmail uses base64url — convert to standard base64 for Claude
-  return (data.data || "").replace(/-/g, "+").replace(/_/g, "/");
-}
-
-const LOAD_SHEET_KEYWORDS = ["load sheet", "order confirmation", "load confirmation", "booking confirmation", "rate confirmation", "dispatch", "shipment confirmation", "carrier confirmation"];
-const CARRIER_CONF_KEYWORDS = ["carrier confirmation"];
-const RATE_SHEET_KEYWORDS = ["rate sheet", "rate card", "tariff", "pricing sheet", "freight rates", "lane rates", "rate update", "updated rates", "new rates", "rate schedule"];
-
-function isLoadSheetEmail(subject, body) {
-  const text = (subject + " " + (body || "")).toLowerCase();
-  return LOAD_SHEET_KEYWORDS.some(k => text.includes(k));
-}
-
-function buildReplyRaw(to, subject, body, threadId, inReplyTo) {
-  const subj = subject.startsWith("Re:") ? subject : `Re: ${subject}`;
-  const lines = [
-    `To: ${to}`,
-    `Subject: ${subj}`,
-    `Content-Type: text/plain; charset=utf-8`,
-    ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${inReplyTo}`] : []),
-    "",
-    body,
-  ];
-  return btoa(unescape(encodeURIComponent(lines.join("\r\n"))))
-    .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-}
 
 function AutocompleteInput({ value, onChange, suggestions, placeholder, inputStyle }) {
   const [open, setOpen] = useState(false);
@@ -878,6 +818,7 @@ export default function App() {
   const [activeIdx, setActiveIdx]   = useState(0);       // currently viewed shipment
   const [quoteTexts, setQuoteTexts]       = useState([]);   // generated quote per shipment
   const [allShipmentRates, setAllShipmentRates] = useState([]); // [{base,total,rateCity,rateResult}]
+  const [quoteTimestamps, setQuoteTimestamps] = useState([]); // saveQuote's timestamp per shipment, for Send Email
   const [copiedIdx, setCopiedIdx]         = useState(null);
   const [allCopied, setAllCopied]         = useState(false);
   const [fsc, setFsc]               = useState(0.18);
@@ -888,11 +829,13 @@ export default function App() {
   const [error, setError]           = useState(null);
   const [quoteText, setQuoteText]   = useState("");
   const [copied, setCopied]         = useState(false);
-  const [company, setCompany]       = useState("BDR International LTD");
-  const [contact, setContact]       = useState("Nolan Giesbrecht");
-  const [phone, setPhone]           = useState("519-469-9361 ext 113");
+  const [brokerCompany, setBrokerCompany] = useState("");
+  const [brokerName, setBrokerName]       = useState("");
+  const [brokerPhone, setBrokerPhone]     = useState("");
+  const [brokerEmail, setBrokerEmail]     = useState("");
+  const [emailSendState, setEmailSendState] = useState({}); // {[shipmentIdx]: "sending"|"sent"|"error"}
   const debounce                    = useRef(null);
-  const [tab, setTab]               = useState("quote");   // quote | history | gmail
+  const [tab, setTab]               = useState("quote");   // quote | history
 
   // ── Capacity / Truck planning state ──────────────────────────
   const [truckDays, setTruckDays]           = useState([]);
@@ -931,26 +874,13 @@ export default function App() {
   const [editDriverLanes,    setEditDriverLanes]   = useState([]);
   const [editDriverType,     setEditDriverType]    = useState("company");
 
-  // ── Gmail state ───────────────────────────────────────────────
-  const [gmailToken,    setGmailToken]    = useState(null);
-  const [gmailUser,     setGmailUser]     = useState(null);
-  const [gmailEmails,   setGmailEmails]   = useState([]);
-  const [gmailLoading,  setGmailLoading]  = useState(false);
-  const [gmailQuotes,   setGmailQuotes]   = useState({});
-  const [gmailFilter,   setGmailFilter]   = useState("all");
-  const [gmailExpandedId, setGmailExpandedId] = useState(null);
-  const [gmailQuoteTabIdx, setGmailQuoteTabIdx] = useState({});  // {[emailId]: activeQuoteIndex}
-  const [sendingIds,    setSendingIds]    = useState(new Set());
-  const [scanningAll,   setScanningAll]   = useState(false);
-  const [rateSheetB64,  setRateSheetB64]  = useState(() => { try { return localStorage.getItem("bdr_rate_sheet") || null; } catch(e) { return null; } });
-  const gmailClientRef = useRef(null);
-  const [scanState, setScanState] = useState(null); // null | {status:"scanning"|"done", found, processed, added}
-  const gmailTokenRef = useRef(null);
-  const gmailQuotesRef = useRef({});
   const [history, setHistory]       = useState([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [histSearch, setHistSearch] = useState("");
-  const [historyView, setHistoryView] = useState("quotes"); // "quotes" | "pipeline"
+  const [historyView, setHistoryView] = useState("quotes"); // "quotes" | "pipeline" | "customers"
+  const [brokers, setBrokers]         = useState([]);
+  const [brokersLoaded, setBrokersLoaded] = useState(false);
+  const [expandedBroker, setExpandedBroker] = useState(null);
   const [counterInputs, setCounterInputs] = useState({}); // {timestamp: amountString}
   const [viewingQuote, setViewingQuote] = useState(null);
   const [customers, setCustomers]     = useState([]);
@@ -958,32 +888,12 @@ export default function App() {
   const [plSearch,   setPlSearch]     = useState("");
   const [matchedCustomer, setMatchedCustomer] = useState(null); // auto-matched on parse
 
-  const historyRef  = useRef([]);
-  const contactRef  = useRef("Nolan Giesbrecht");
-  const phoneRef    = useRef("519-469-9361 ext 113");
-  const companyRef  = useRef("BDR International LTD");
-  const gmailUserRef = useRef(null);
-  const processGmailEmailRef = useRef(null);
-  const fetchInboxRef = useRef(null);
-
   // ── Agent state ───────────────────────────────────────────────
   const [agentOpen,     setAgentOpen]     = useState(false);
   const [agentMessages, setAgentMessages] = useState([]);
   const [agentInput,    setAgentInput]    = useState("");
   const [agentLoading,  setAgentLoading]  = useState(false);
   const [agentAlerts,   setAgentAlerts]   = useState([]);
-
-  // Keep refs in sync for use inside callbacks
-  useEffect(() => {
-    gmailQuotesRef.current = gmailQuotes;
-    try { localStorage.setItem("bdr_gmail_quotes", JSON.stringify(gmailQuotes)); } catch(e) {}
-  }, [gmailQuotes]);
-  useEffect(() => { gmailTokenRef.current = gmailToken; }, [gmailToken]);
-  useEffect(() => { historyRef.current = history; }, [history]);
-  useEffect(() => { contactRef.current = contact; }, [contact]);
-  useEffect(() => { phoneRef.current = phone; }, [phone]);
-  useEffect(() => { companyRef.current = company; }, [company]);
-  useEffect(() => { gmailUserRef.current = gmailUser; }, [gmailUser]);
 
   // Load history from storage on mount
   useEffect(() => {
@@ -1068,27 +978,53 @@ export default function App() {
         if (sd) setSlotDrivers(JSON.parse(sd.value));
       } catch(e) {}
 
-      // Restore Gmail session if token hasn't expired
-      try {
-        const raw = localStorage.getItem("bdr_gmail_session");
-        if (raw) {
-          const session = JSON.parse(raw);
-          if (session.token && session.expiresAt > Date.now()) {
-            setGmailToken(session.token);
-            setGmailUser(session.user || "");
-          } else {
-            localStorage.removeItem("bdr_gmail_session");
-          }
-        }
-      } catch(e) {}
-
-      // Restore gmailQuotes so email cards keep their rates after refresh
-      try {
-        const gq = localStorage.getItem("bdr_gmail_quotes");
-        if (gq) setGmailQuotes(JSON.parse(gq));
-      } catch(e) {}
     })();
   }, []);
+
+  // Reconcile with the server (Postgres) — picks up outcomes changed by an
+  // emailed Accept/Decline click, and quotes generated on other devices/browsers.
+  // Fires on load and whenever the History tab is opened. Best-effort: the app
+  // must keep working fully offline / before the backend is deployed.
+  useEffect(() => {
+    if (!historyLoaded) return;
+    (async () => {
+      try {
+        const res = await fetch("/api/quotes");
+        const data = await res.json();
+        if (!data.ok) return;
+        const serverQuotes = data.quotes.map(q => ({ ...q, timestamp: Number(q.client_timestamp) }));
+        setHistory(prev => {
+          const byTs = new Map(prev.map(q => [q.timestamp, q]));
+          for (const sq of serverQuotes) {
+            const local = byTs.get(sq.timestamp);
+            if (local) {
+              if (local.outcome !== sq.outcome) {
+                const merged = { ...local, outcome: sq.outcome };
+                byTs.set(sq.timestamp, merged);
+                window.storage.set(`bdr_quote:${sq.timestamp}`, JSON.stringify(merged)).catch(()=>{});
+              }
+            } else {
+              byTs.set(sq.timestamp, sq);
+            }
+          }
+          return [...byTs.values()].sort((a,b) => b.timestamp - a.timestamp);
+        });
+      } catch(e) { console.error("Could not reconcile quotes from server:", e); }
+    })();
+  }, [historyLoaded, tab]);
+
+  // Lazy-load the broker/customer directory the first time that view is opened.
+  useEffect(() => {
+    if (historyView !== "customers" || brokersLoaded) return;
+    (async () => {
+      try {
+        const res = await fetch("/api/brokers");
+        const data = await res.json();
+        if (data.ok) setBrokers(data.brokers);
+      } catch(e) { console.error("Could not load customers:", e); }
+      finally { setBrokersLoaded(true); }
+    })();
+  }, [historyView, brokersLoaded]);
 
   const QUOTE_LIMIT = 500;
 
@@ -1184,6 +1120,14 @@ export default function App() {
         return updated;
       });
     } catch(e) { console.error("Could not save quote:", e); }
+
+    // Dual-write to Postgres so history/customer visibility survives across
+    // devices/browsers — best-effort, never blocks the local-first UI.
+    fetch("/api/quotes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }).catch(e => console.error("Could not sync quote to server:", e));
   };
 
   // Auto-match broker company to saved customer profile
@@ -1242,6 +1186,8 @@ export default function App() {
       const match = matchCustomer(first.broker_company, first.broker_name);
       setMatchedCustomer(match);
       if (match?.default_fsc != null) setFsc(match.default_fsc);
+      if (first.broker_name) setBrokerName(prev => prev || first.broker_name);
+      if (first.broker_company) setBrokerCompany(prev => prev || first.broker_company);
     } catch(e) { setError(e?.message || "Could not parse email. Check your connection and try again."); }
     finally { setLoading(false); }
   }, [email]);
@@ -1270,752 +1216,11 @@ export default function App() {
       const match = matchCustomer(result.broker_company, result.broker_name);
       setMatchedCustomer(match);
       if (match?.default_fsc != null) setFsc(match.default_fsc);
+      if (result.broker_name) setBrokerName(prev => prev || result.broker_name);
+      if (result.broker_company) setBrokerCompany(prev => prev || result.broker_company);
     } catch(e) { setError(e?.message || "Could not read PDF. Try again."); }
     finally { setPdfLoading(false); }
   }, []);
-
-  // ── Gmail functions ───────────────────────────────────────────
-
-  const fetchInbox = useCallback(async (token) => {
-    setGmailLoading(true);
-    try {
-      const listRes = await fetch(
-        "https://gmail.googleapis.com/gmail/v1/users/me/messages?labelIds=INBOX&maxResults=40",
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const listData = await listRes.json();
-      if (!listData.messages?.length) { setGmailEmails([]); return; }
-      const messages = await Promise.all(
-        listData.messages.map(({ id }) =>
-          fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
-            { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
-        )
-      );
-      const valid = messages.filter(m => m.id);
-      setGmailEmails(valid);
-      // Auto-processing is handled by the gmailEmails useEffect
-    } catch(e) { console.error("Gmail fetch:", e); }
-    finally { setGmailLoading(false); }
-  }, []);
-
-  const connectGmail = useCallback(() => {
-    if (!GOOGLE_CLIENT_ID) { alert("Add VITE_GOOGLE_CLIENT_ID to your .env and restart the server."); return; }
-    const client = window.google?.accounts?.oauth2?.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email",
-      callback: async (resp) => {
-        if (!resp.access_token) return;
-        setGmailToken(resp.access_token);
-        const expiresAt = Date.now() + (resp.expires_in ? resp.expires_in * 1000 : 3600000);
-        try {
-          const u = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", { headers: { Authorization: `Bearer ${resp.access_token}` } });
-          const ud = await u.json();
-          setGmailUser(ud.email || "");
-          localStorage.setItem("bdr_gmail_session", JSON.stringify({ token: resp.access_token, user: ud.email || "", expiresAt }));
-        } catch(e) {
-          localStorage.setItem("bdr_gmail_session", JSON.stringify({ token: resp.access_token, user: "", expiresAt }));
-        }
-        // fetchInbox is triggered by the gmailToken useEffect — no need to call it here too
-      },
-    });
-    if (!client) { alert("Google Identity Services not loaded yet — wait a moment and try again."); return; }
-    gmailClientRef.current = client;
-    client.requestAccessToken();
-  }, [fetchInbox]);
-
-  const processGmailEmail = useCallback(async (email) => {
-    const id = email.id;
-    setGmailQuotes(prev => ({ ...prev, [id]: { status: "processing" } }));
-    const headers = email.payload?.headers || [];
-    const subject = headers.find(h => h.name === "Subject")?.value || "";
-    const from    = headers.find(h => h.name === "From")?.value || "";
-    const body    = getEmailBody(email.payload);
-
-    // ── Rate sheet auto-capture ──
-    const emailText = (subject + " " + (body || "")).toLowerCase();
-    if (hasPdfAttachment(email.payload) && RATE_SHEET_KEYWORDS.some(k => emailText.includes(k))) {
-      try {
-        const pdfPart = getPdfAttachmentPart(email.payload);
-        let pdfBase64;
-        if (pdfPart?.body?.attachmentId && gmailTokenRef.current) {
-          pdfBase64 = await fetchGmailPdfBase64(gmailTokenRef.current, id, pdfPart.body.attachmentId);
-        } else if (pdfPart?.body?.data) {
-          pdfBase64 = pdfPart.body.data.replace(/-/g, "+").replace(/_/g, "/");
-        }
-        if (pdfBase64) {
-          setRateSheetB64(pdfBase64);
-          try { localStorage.setItem("bdr_rate_sheet", pdfBase64); } catch(e) {}
-        }
-      } catch(e) { console.warn("Rate sheet capture failed:", e); }
-      // Don't return — continue processing the email normally
-    }
-
-    // ── Carrier confirmation detection (sent loads) ──
-    const isCarrierConf = hasPdfAttachment(email.payload) && CARRIER_CONF_KEYWORDS.some(k => emailText.includes(k));
-    if (isCarrierConf) {
-      setGmailQuotes(prev => ({ ...prev, [id]: { status: "processing" } }));
-      try {
-        const pdfPart = getPdfAttachmentPart(email.payload);
-        let pdfBase64;
-        if (pdfPart?.body?.attachmentId && gmailTokenRef.current) {
-          pdfBase64 = await fetchGmailPdfBase64(gmailTokenRef.current, id, pdfPart.body.attachmentId);
-        } else if (pdfPart?.body?.data) {
-          pdfBase64 = pdfPart.body.data.replace(/-/g, "+").replace(/_/g, "/");
-        }
-        const pdfResult = pdfBase64 ? await parsePDFWithClaude(pdfBase64, pdfPart?.body?.attachmentId ? `bdr_pdf:${pdfPart.body.attachmentId}` : undefined) : null;
-        const parsed = pdfResult?.shipments?.[0] || pdfResult || {};
-        const norm = normalizeShipment(parsed);
-        const coords = (!norm.dest_lat && norm.dest_city) ? await geocodeCity(norm.dest_city, norm.dest_state) : null;
-        if (coords) { norm.dest_lat = coords.lat; norm.dest_lon = coords.lon; }
-        const now = Date.now();
-        const senderName = from.replace(/<.*>/, "").trim() || from;
-        const record = {
-          timestamp: now,
-          outcome: "sent_load",
-          source: "carrier_confirmation",
-          date: new Date().toLocaleDateString("en-CA"),
-          time: new Date().toLocaleTimeString("en-CA", { hour:"2-digit", minute:"2-digit" }),
-          broker_name: pdfResult?.broker_name || parsed.broker_name || senderName,
-          broker_company: pdfResult?.broker_company || parsed.broker_company || "",
-          broker_email: (from.match(/<(.+?)>/) || [])[1] || from,
-          origin: norm.origin || "Ontario",
-          pickup_location: norm.pickup_location || "",
-          dest_city: norm.dest_city || "",
-          dest_state: norm.dest_state || "",
-          dest_lat: norm.dest_lat || null,
-          dest_lon: norm.dest_lon || null,
-          skids: norm.skids,
-          footage: norm.footage,
-          weight_lbs: norm.weight_lbs,
-          commodity: norm.commodity,
-          pickup_date: norm.pickup_date,
-          delivery_date: norm.delivery_date,
-          consignee: norm.consignee,
-          delivery_address: norm.delivery_address,
-          reference_number: norm.reference_number,
-          carrier_name: parsed.carrier_name || "",
-          base_rate: parsed.freight_charge || null,
-          total: parsed.freight_charge || null,
-          thread_id: email.threadId,
-          email_subject: subject,
-          gmail_msg_id: id,
-          pdf_attachment_id: pdfPart?.body?.attachmentId || null,
-        };
-        await window.storage.set(`bdr_quote:${now}`, JSON.stringify(record));
-        setHistory(prev => [record, ...prev]);
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "sent_load", matchedTimestamp: now, brokerName: record.broker_name } }));
-      } catch(e) {
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "error", error: e.message } }));
-      }
-      return;
-    }
-
-    // ── Load sheet / order confirmation detection ──
-    if (hasPdfAttachment(email.payload) && isLoadSheetEmail(subject, body)) {
-      const brokerEmail = (from.match(/<(.+?)>/) || [])[1] || from;
-      // Match to a quoted load: same thread first, then same broker email on waiting/broker_sending
-      const matched = historyRef.current.find(h => h.thread_id === email.threadId)
-        || historyRef.current.find(h => h.broker_email && h.broker_email.toLowerCase() === brokerEmail.toLowerCase()
-            && (h.outcome === "waiting" || h.outcome === "broker_sending"));
-
-      if (matched) {
-        // Existing quote — just mark received
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "load_sheet", matchedTimestamp: matched.timestamp, brokerName: matched.broker_name || (from.replace(/<.*>/, "").trim()) } }));
-        await updateQuoteOutcome(matched.timestamp, "received");
-      } else {
-        // No prior quote — parse the load sheet and add directly to pipeline as received
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "processing" } }));
-        try {
-          // Prefer reading the actual PDF attachment over just the email body
-          const pdfPart = getPdfAttachmentPart(email.payload);
-          let parsed;
-          if (pdfPart?.body?.attachmentId && gmailTokenRef.current) {
-            const pdfBase64 = await fetchGmailPdfBase64(gmailTokenRef.current, id, pdfPart.body.attachmentId);
-            const pdfResult = await parsePDFWithClaude(pdfBase64, `bdr_pdf:${pdfPart.body.attachmentId}`);
-            parsed = pdfResult.shipments?.[0] || pdfResult;
-            if (!parsed.broker_name) parsed.broker_name = pdfResult.broker_name || from.replace(/<.*>/, "").trim();
-            if (!parsed.broker_company) parsed.broker_company = pdfResult.broker_company || "";
-          } else {
-            parsed = await parseLoadSheetWithClaude(`From: ${from}\nSubject: ${subject}\n\n${body}`);
-          }
-          const now = Date.now();
-          const brokerDisplayName = parsed.broker_name || from.replace(/<.*>/, "").trim() || "—";
-          const norm_ls = normalizeShipment(parsed);
-          const lsCoords = (!norm_ls.dest_lat && norm_ls.dest_city) ? await geocodeCity(norm_ls.dest_city, norm_ls.dest_state) : null;
-          if (lsCoords) { norm_ls.dest_lat = lsCoords.lat; norm_ls.dest_lon = lsCoords.lon; }
-          const lsRc = norm_ls.dest_lat ? findNearestRateCity(norm_ls.dest_lat, norm_ls.dest_lon, norm_ls.dest_city) : null;
-          const lsRr = lsRc ? getRate(norm_ls.origin, lsRc, norm_ls.skids, norm_ls.weight_lbs, norm_ls.line_items, norm_ls.footage) : null;
-          await saveQuote({
-            timestamp: now,
-            outcome: "received",
-            source: "load_sheet",
-            date: new Date().toLocaleDateString("en-CA"),
-            time: new Date().toLocaleTimeString("en-CA", { hour:"2-digit", minute:"2-digit" }),
-            broker_name: brokerDisplayName,
-            broker_company: parsed.broker_company || "",
-            broker_email: brokerEmail,
-            origin: norm_ls.origin || "Ontario",
-            pickup_location: norm_ls.pickup_location || "",
-            dest_city: norm_ls.dest_city || "",
-            dest_state: norm_ls.dest_state || "",
-            dest_lat: norm_ls.dest_lat || null,
-            dest_lon: norm_ls.dest_lon || null,
-            skids: norm_ls.skids,
-            footage: norm_ls.footage,
-            weight_lbs: norm_ls.weight_lbs,
-            commodity: norm_ls.commodity,
-            pickup_date: norm_ls.pickup_date,
-            delivery_date: norm_ls.delivery_date,
-            consignee: norm_ls.consignee,
-            delivery_address: norm_ls.delivery_address,
-            reference_number: norm_ls.reference_number,
-            base_rate: parsed.freight_charge || lsRr?.base || null,
-            total: parsed.freight_charge || (lsRr?.base ? r5(lsRr.base * 1.18) : null),
-            thread_id: email.threadId,
-            email_subject: subject,
-            quoted_at: now,
-          });
-          setGmailQuotes(prev => ({ ...prev, [id]: { status: "load_sheet", matchedTimestamp: now, brokerName: brokerDisplayName } }));
-        } catch(e) {
-          setGmailQuotes(prev => ({ ...prev, [id]: { status: "load_sheet", matchedTimestamp: null, brokerName: from.replace(/<.*>/, "").trim() } }));
-        }
-      }
-      return;
-    }
-
-    try {
-      const parsed_list = await parseEmailWithClaude(`From: ${from}\nSubject: ${subject}\n\n${body}`);
-      const first = parsed_list[0];
-      const emailType = first?.email_type || "quote_request";
-
-      // Non-quote emails: classify and store
-      if (emailType !== "quote_request") {
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "classified", email_type: emailType } }));
-        return;
-      }
-      if (!first?.dest_city && !first?.skids && !first?.weight_lbs && !first?.footage) {
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "not_quote" } })); return;
-      }
-
-      // ── Process ALL shipments from the email (multi-quote support) ──
-      const quotes = [];
-      let serviceableCount = 0;
-      for (let qi = 0; qi < parsed_list.length; qi++) {
-        const s = normalizeShipment(parsed_list[qi]);
-        if (!s.dest_city && !s.skids && !s.weight_lbs && !s.footage) continue;
-        const unservicedZone = isUnserviced(s.dest_city, s.dest_state, s.dest_lat, s.dest_lon);
-        if (unservicedZone) {
-          quotes.push({ parsed: s, rateCity: null, rateResult: null, quoteText: "", emailFsc: 0.18, emailAccs: {}, emailCustomAcc: "", unserviced: unservicedZone });
-          continue;
-        }
-        const dir = s.direction || "outbound";
-        const isInb = dir === "inbound";
-        let lat = isInb ? s.pickup_lat : s.dest_lat;
-        let lon = isInb ? s.pickup_lon : s.dest_lon;
-        if (!lat || !lon) {
-          const coords = await geocodeCity(isInb ? (s.pickup_location||s.origin) : s.dest_city, isInb ? null : s.dest_state);
-          if (coords) {
-            if (isInb) { s.pickup_lat = coords.lat; s.pickup_lon = coords.lon; }
-            else { s.dest_lat = coords.lat; s.dest_lon = coords.lon; }
-            lat = coords.lat; lon = coords.lon;
-          }
-        }
-        const rc = (lat && lon) ? findNearestRateCity(lat, lon, isInb ? s.pickup_location : s.dest_city) : null;
-        const origin = isInb ? (s.dest_state === "QC" ? "Quebec" : "Ontario") : s.origin;
-        const rr = rc ? getRate(origin, rc, s.skids, s.weight_lbs, s.line_items, s.footage, dir) : null;
-        const isFirstQuote = serviceableCount === 0;
-        // Build quote text inline (avoids stale closure — refs are always current)
-        let qt = "";
-        if (rr?.base) {
-          const fsc = 0.18;
-          const total = r5(rr.base * (1 + fsc));
-          const td = TRANSIT_TIMES[s.dest_state?.toUpperCase()];
-          qt = [
-            isFirstQuote ? `Hi ${s.broker_first_name || (s.broker_name||"").split(" ")[0] || "there"},` : null,
-            isFirstQuote ? "" : null,
-            isFirstQuote ? "Thank you for reaching out. Please find our rate below." : "Please see the additional quote below.",
-            "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "FREIGHT QUOTE", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            `Pickup:        ${s.pickup_location || s.origin}`,
-            `Destination:   ${s.dest_city}, ${s.dest_state}`,
-            `Skids:         ${s.skids}${rr.basisLabel==="weight"?` (charged at ${SKID_LABELS[rr.chargeIdx]} skids — weight basis)`:rr.basisLabel==="footage"&&!rr.footageOnly?` (rated on ${s.footage} ft customer footage)`:rr.basisLabel==="skids"?` (std 48×40")`:``}`,
-            s.weight_lbs ? `Weight:        ${Number(s.weight_lbs).toLocaleString()} lbs` : null,
-            s.commodity   ? `Commodity:     ${s.commodity}` : null,
-            s.pickup_date ? `Pickup Date:   ${s.pickup_date}` : null,
-            td ? `Transit Time:  Approx. ${td}` : null,
-            "", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            `TOTAL:         $${total} CAD`,
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            isFirstQuote ? ["", "Quote valid for 24 hours. Transit times subject to availability.", "", contactRef.current, companyRef.current, phoneRef.current].join("\n") : null,
-          ].filter(l => l !== null).join("\n");
-          if (!isFirstQuote) qt += ["", "", "Quote valid for 24 hours. Transit times subject to availability."].join("\n");
-        }
-        quotes.push({ parsed: s, rateCity: rc, rateResult: rr, quoteText: qt, emailFsc: 0.18, emailAccs: {}, emailCustomAcc: "" });
-        serviceableCount++;
-      }
-
-      if (quotes.length === 0) {
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "not_quote" } })); return;
-      }
-      if (quotes.length === 1 && quotes[0].unserviced) {
-        const uq = quotes[0];
-        setGmailQuotes(prev => ({ ...prev, [id]: { status: "unserviced", city: uq.parsed.dest_city, state: uq.parsed.dest_state, zone: uq.unserviced } })); return;
-      }
-      setGmailQuotes(prev => ({ ...prev, [id]: { status: "quote_ready", quotes } }));
-    } catch(e) {
-      setGmailQuotes(prev => ({ ...prev, [id]: { status: "error", error: e.message } }));
-    }
-  }, []);
-
-  const reparsePDFEmail = useCallback(async (email, existingTimestamp) => {
-    const id = email.id;
-    const pdfPart = getPdfAttachmentPart(email.payload);
-    if (!pdfPart) { alert("No PDF attachment found in this email."); return; }
-    setGmailQuotes(prev => ({ ...prev, [id]: { ...prev[id], reparsing: true } }));
-    try {
-      let pdfBase64;
-      console.log("[PDF] pdfPart:", JSON.stringify({mimeType:pdfPart.mimeType, filename:pdfPart.filename, bodyKeys:Object.keys(pdfPart.body||{}), attachmentId:pdfPart.body?.attachmentId, dataLen:pdfPart.body?.data?.length}));
-      if (pdfPart.body?.attachmentId && gmailTokenRef.current) {
-        pdfBase64 = await fetchGmailPdfBase64(gmailTokenRef.current, id, pdfPart.body.attachmentId);
-        console.log("[PDF] fetched attachment, base64 length:", pdfBase64?.length);
-      } else if (pdfPart.body?.data) {
-        pdfBase64 = pdfPart.body.data.replace(/-/g, "+").replace(/_/g, "/");
-        console.log("[PDF] inline data, base64 length:", pdfBase64?.length);
-      } else {
-        alert("Could not retrieve PDF data — attachment has no data or ID. Check console for details.");
-        setGmailQuotes(prev => ({ ...prev, [id]: { ...prev[id], reparsing: false } }));
-        return;
-      }
-      console.log("[PDF] sending to Claude, base64 length:", pdfBase64?.length);
-      const result = await parsePDFWithClaude(pdfBase64, pdfPart.body?.attachmentId ? `bdr_pdf:${pdfPart.body.attachmentId}` : undefined);
-      console.log("[PDF] Claude result:", JSON.stringify(result).slice(0, 300));
-      const parsed = result.shipments?.[0] || result;
-      if (!parsed.broker_name) parsed.broker_name = result.broker_name;
-      if (!parsed.broker_company) parsed.broker_company = result.broker_company;
-      const norm = normalizeShipment(parsed);
-      const coords = (!norm.dest_lat && norm.dest_city) ? await geocodeCity(norm.dest_city, norm.dest_state) : null;
-      if (coords) { norm.dest_lat = coords.lat; norm.dest_lon = coords.lon; }
-      const rc = norm.dest_lat ? findNearestRateCity(norm.dest_lat, norm.dest_lon, norm.dest_city) : null;
-      const rr = rc ? getRate(norm.origin, rc, norm.skids, norm.weight_lbs, norm.line_items, norm.footage) : null;
-      const updates = {
-        origin: norm.origin || "Ontario",
-        pickup_location: norm.pickup_location || "",
-        dest_city: norm.dest_city || "",
-        dest_state: norm.dest_state || "",
-        dest_lat: norm.dest_lat || null,
-        dest_lon: norm.dest_lon || null,
-        skids: norm.skids,
-        footage: norm.footage,
-        weight_lbs: norm.weight_lbs,
-        commodity: norm.commodity,
-        pickup_date: norm.pickup_date,
-        delivery_date: norm.delivery_date,
-        consignee: norm.consignee,
-        delivery_address: norm.delivery_address,
-        reference_number: norm.reference_number,
-        broker_name: norm.broker_name || parsed.broker_name || "",
-        broker_company: norm.broker_company || parsed.broker_company || "",
-        base_rate: parsed.freight_charge || rr?.base || null,
-        total: parsed.freight_charge || (rr?.base ? r5(rr.base * 1.18) : null),
-      };
-      console.log("[PDF] existingTimestamp:", existingTimestamp, "historyLen:", historyRef.current.length);
-      console.log("[PDF] updates:", JSON.stringify(updates).slice(0, 200));
-      const existing = historyRef.current.find(h => h.timestamp === existingTimestamp);
-      console.log("[PDF] existing record found:", !!existing);
-      if (existing) {
-        const updated = { ...existing, ...updates };
-        await window.storage.set(`bdr_quote:${existingTimestamp}`, JSON.stringify(updated));
-        setHistory(prev => prev.map(h => h.timestamp === existingTimestamp ? updated : h));
-        console.log("[PDF] saved successfully:", updated.dest_city, updated.total);
-      } else {
-        // No existing record — create a new one
-        const headers = email.payload?.headers || [];
-        const from = headers.find(h=>h.name==="From")?.value || "";
-        const subject = headers.find(h=>h.name==="Subject")?.value || "";
-        const brokerEmail = (from.match(/<(.+?)>/) || [])[1] || from;
-        const newRecord = {
-          timestamp: existingTimestamp || Date.now(),
-          outcome: "received",
-          source: "load_sheet",
-          date: new Date().toLocaleDateString("en-CA"),
-          time: new Date().toLocaleTimeString("en-CA",{hour:"2-digit",minute:"2-digit"}),
-          broker_email: brokerEmail,
-          thread_id: email.threadId,
-          email_subject: subject,
-          quoted_at: Date.now(),
-          ...updates,
-        };
-        await window.storage.set(`bdr_quote:${newRecord.timestamp}`, JSON.stringify(newRecord));
-        setHistory(prev => [newRecord, ...prev.filter(h => h.timestamp !== newRecord.timestamp)]);
-        setGmailQuotes(prev => ({ ...prev, [id]: { status:"load_sheet", matchedTimestamp:newRecord.timestamp, brokerName:updates.broker_name } }));
-        console.log("[PDF] created new record:", newRecord.dest_city, newRecord.total);
-      }
-      setGmailQuotes(prev => ({ ...prev, [id]: { ...prev[id], reparsing: false } }));
-    } catch(e) {
-      setGmailQuotes(prev => ({ ...prev, [id]: { ...prev[id], reparsing: false } }));
-      alert("Re-parse failed: " + e.message);
-    }
-  }, []);
-
-  const scanAllEmails = useCallback(async () => {
-    setScanningAll(true);
-    const unprocessed = gmailEmails.filter(e => !gmailQuotes[e.id]);
-    for (const email of unprocessed) {
-      await processGmailEmail(email);
-      await new Promise(r => setTimeout(r, 1500));
-    }
-    setScanningAll(false);
-  }, [gmailEmails, gmailQuotes, processGmailEmail]);
-
-  const sendGmailReply = useCallback(async (email, quoteText) => {
-    const id = email.id;
-    setSendingIds(prev => new Set([...prev, id]));
-    try {
-      const hdrs = email.payload?.headers || [];
-      const from      = hdrs.find(h => h.name === "From")?.value || "";
-      const subject   = hdrs.find(h => h.name === "Subject")?.value || "";
-      const messageId = hdrs.find(h => h.name === "Message-ID")?.value;
-      const raw = buildReplyRaw(from, subject, quoteText, email.threadId, messageId);
-      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${gmailToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ raw, threadId: email.threadId }),
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.error?.message || "Send failed"); }
-      setGmailQuotes(prev => ({ ...prev, [id]: { ...prev[id], status: "sent" } }));
-
-      // Mark as read and archive
-      await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}/modify`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${gmailToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ removeLabelIds: ["UNREAD", "INBOX"] }),
-      }).catch(() => {});
-
-      // Save each quoted shipment to history
-      const qEntry = gmailQuotesRef.current[id];
-      const quotesToSave = qEntry?.quotes || (qEntry?.parsed ? [{ parsed: qEntry.parsed, rateCity: qEntry.rateCity, rateResult: qEntry.rateResult, emailFsc: qEntry.emailFsc??0.18, emailAccs: qEntry.emailAccs||{}, emailCustomAcc: qEntry.emailCustomAcc||"" }] : []);
-      const brokerEmail = (from.match(/<(.+?)>/) || [])[1] || from;
-      for (let qi = 0; qi < quotesToSave.length; qi++) {
-        const qItem = quotesToSave[qi];
-        if (!qItem?.parsed || !qItem?.rateResult?.base || qItem.unserviced) continue;
-        const p  = qItem.parsed;
-        const rr = qItem.rateResult;
-        const rc = qItem.rateCity;
-        const now = Date.now() + qi; // offset to ensure unique timestamps
-        const fscV = qItem.emailFsc ?? 0.18;
-        const accs = qItem.emailAccs || {};
-        const sub  = r5(rr.base * (1 + fscV));
-        const fl   = accs["fl"] ? r5(sub * 1.10) : sub;
-        const fixed = (accs["da"]?75:0)+(accs["lg"]?75:0)+(accs["nc"]?150:0)+(accs["st"]?100:0)+(parseFloat(qItem.emailCustomAcc||"")||0);
-        await saveQuote({
-          timestamp: now,
-          date: new Date().toLocaleDateString("en-CA"),
-          time: new Date().toLocaleTimeString("en-CA", {hour:"2-digit",minute:"2-digit"}),
-          broker_name: p.broker_name || "—", broker_company: p.broker_company || "",
-          origin: p.origin || p.pickup_location || "",
-          dest_city: p.dest_city || "", dest_state: p.dest_state || "",
-          skids: p.skids, weight_lbs: p.weight_lbs,
-          base_rate: rr.base, fsc: fscV, total: r5(fl + fixed),
-          rate_city: rc?.city, basis_label: rr.basisLabel, charge_skids: SKID_LABELS[rr.chargeIdx],
-          quote_text: qItem.quoteText || quoteText,
-          broker_email: brokerEmail,
-          thread_id: email.threadId,
-          email_subject: subject,
-          quoted_at: now,
-          followup_sent_at: null,
-          last_reply_checked: null,
-        });
-      }
-    } catch(e) { alert("Failed to send: " + e.message); }
-    finally { setSendingIds(prev => { const s = new Set(prev); s.delete(id); return s; }); }
-  }, [gmailToken]);
-
-  useEffect(() => { processGmailEmailRef.current = processGmailEmail; }, [processGmailEmail]);
-  useEffect(() => { fetchInboxRef.current = fetchInbox; }, [fetchInbox]);
-
-  // Auto-process any email that has no status whenever the email list changes
-  useEffect(() => {
-    if (gmailEmails.length === 0) return;
-    const unprocessed = gmailEmails.filter(m => !gmailQuotesRef.current[m.id]);
-    if (unprocessed.length === 0) return;
-    (async () => {
-      for (const m of unprocessed) {
-        await processGmailEmailRef.current?.(m);
-        await new Promise(r => setTimeout(r, 2000)); // 2s stagger — prevents API flood
-      }
-    })();
-  }, [gmailEmails]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-poll Gmail every 5 minutes when connected; also fetch on token restore
-  useEffect(() => {
-    if (!gmailToken) return;
-    fetchInboxRef.current?.(gmailToken);
-    const id = setInterval(() => { if (gmailTokenRef.current) fetchInboxRef.current?.(gmailTokenRef.current); }, 5 * 60 * 1000);
-    return () => clearInterval(id);
-  }, [gmailToken]);
-
-  const scanAllLoadSheets = useCallback(async () => {
-    if (!gmailToken) return;
-    setScanState({ status: "scanning", found: 0, processed: 0, added: 0 });
-    try {
-      const q = encodeURIComponent('has:attachment ("load sheet" OR "order confirmation" OR "rate confirmation" OR "rate conf" OR "dispatch" OR "shipment confirmation" OR "booking confirmation")');
-      const allIds = [];
-      let pageToken = null;
-      do {
-        const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=500${pageToken ? `&pageToken=${pageToken}` : ""}`;
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${gmailToken}` } });
-        const data = await res.json();
-        if (data.messages) allIds.push(...data.messages.map(m => m.id));
-        pageToken = data.nextPageToken || null;
-      } while (pageToken);
-
-      setScanState(prev => ({ ...prev, found: allIds.length }));
-
-      let added = 0;
-      for (let i = 0; i < allIds.length; i++) {
-        const msgId = allIds[i];
-        setScanState(prev => ({ ...prev, processed: i + 1 }));
-
-        const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}?format=full`, {
-          headers: { Authorization: `Bearer ${gmailToken}` }
-        });
-        const email = await msgRes.json();
-        if (!email.id) continue;
-
-        const headers = email.payload?.headers || [];
-        const subject = headers.find(h => h.name === "Subject")?.value || "";
-        const body    = getEmailBody(email.payload);
-        if (!hasPdfAttachment(email.payload) || !isLoadSheetEmail(subject, body)) continue;
-
-        const from = headers.find(h => h.name === "From")?.value || "";
-        const brokerEmail = (from.match(/<(.+?)>/) || [])[1] || from;
-        const alreadyTracked = historyRef.current.find(h =>
-          h.thread_id === email.threadId ||
-          (h.broker_email?.toLowerCase() === brokerEmail.toLowerCase() && h.source === "load_sheet" && h.email_subject === subject)
-        );
-        if (alreadyTracked) continue;
-
-        await processGmailEmail(email);
-        added++;
-        setScanState(prev => ({ ...prev, added }));
-        await new Promise(r => setTimeout(r, 1500));
-      }
-      setScanState(prev => ({ ...prev, status: "done" }));
-    } catch(e) {
-      setScanState(prev => ({ ...prev, status: "done" }));
-      console.error("Scan failed:", e);
-    }
-  }, [gmailToken, processGmailEmail]);
-
-  const sendDeclineReply = useCallback(async (email) => {
-    const id = email.id;
-    setSendingIds(prev => new Set([...prev, id]));
-    try {
-      const hdrs      = email.payload?.headers || [];
-      const from      = hdrs.find(h => h.name === "From")?.value || "";
-      const subject   = hdrs.find(h => h.name === "Subject")?.value || "";
-      const messageId = hdrs.find(h => h.name === "Message-ID")?.value;
-      const q         = gmailQuotesRef.current[id];
-      const firstName = q?.parsed?.broker_first_name || (q?.parsed?.broker_name||"").split(" ")[0] || "there";
-      const body = [
-        `Hi ${firstName},`,
-        "",
-        "Thank you for reaching out. Unfortunately we are not servicing this area currently.",
-        "",
-        "We hope to work with you on future loads.",
-        "",
-        `Best regards,`,
-        contactRef.current,
-        "BDR International Ltd.",
-        phoneRef.current,
-      ].join("\n");
-      const raw = buildReplyRaw(from, subject, body, email.threadId, messageId);
-      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${gmailToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ raw, threadId: email.threadId }),
-      });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.error?.message || "Send failed"); }
-      setGmailQuotes(prev => ({ ...prev, [id]: { ...prev[id], status: "declined" } }));
-    } catch(e) { alert("Failed to send decline: " + e.message); }
-    finally { setSendingIds(prev => { const s = new Set(prev); s.delete(id); return s; }); }
-  }, [gmailToken]);
-
-  const updateGmailQuoteSettings = (emailId, quoteIdx, newFsc, newAccs, newCustomAcc) => {
-    const entry = gmailQuotes[emailId];
-    // Normalise: support both new quotes[] structure and legacy flat structure
-    const quotesArr = entry?.quotes || (entry?.parsed ? [{ parsed: entry.parsed, rateCity: entry.rateCity, rateResult: entry.rateResult, quoteText: entry.quoteText||"", emailFsc: entry.emailFsc??0.18, emailAccs: entry.emailAccs||{}, emailCustomAcc: entry.emailCustomAcc||"" }] : []);
-    const qItem = quotesArr[quoteIdx];
-    if (!qItem?.parsed || !qItem?.rateResult?.base) return;
-    const serviceableArr = quotesArr.filter(x => !x.unserviced);
-    const isFirst = serviceableArr.length === 0 || serviceableArr[0] === qItem;
-    const qt = buildQuoteText(qItem.parsed, qItem.rateCity, qItem.rateResult, newFsc, newAccs, newCustomAcc, contact, company, phone, isFirst);
-    const updatedQuotes = quotesArr.map((item, i) => i === quoteIdx ? { ...item, emailFsc: newFsc, emailAccs: newAccs, emailCustomAcc: newCustomAcc, quoteText: qt } : item);
-    setGmailQuotes(prev => ({
-      ...prev,
-      [emailId]: entry?.quotes
-        ? { ...prev[emailId], quotes: updatedQuotes }
-        : { ...prev[emailId], ...updatedQuotes[0], quotes: updatedQuotes },
-    }));
-  };
-
-  // ── Auto follow-up & reply monitoring ────────────────────────
-
-  const classifyBrokerReply = async (replyText) => {
-    try {
-      const res = await claudeFetch({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 80,
-          messages: [{ role: "user", content: `Classify this freight broker reply into exactly one of these JSON responses:\n{"type":"yes_sending"} — they confirm the load, send BOL, or ask for more time\n{"type":"no_not_coming"} — cancelled, not available, not going through\n{"type":"counter","amount":NUMBER} — they propose a different price (extract the dollar amount as a number, no $ sign)\n{"type":"unclear"}\n\nReply with ONLY valid JSON, nothing else.\n\nReply text: ${replyText.slice(0, 800)}` }]
-        });
-      const data = await res.json();
-      const raw = (data.content?.[0]?.text || "").trim();
-      try { return JSON.parse(raw); } catch { return { type: raw.toLowerCase() }; }
-    } catch(e) { return { type: "unclear" }; }
-  };
-
-  const sendFollowUpEmail = useCallback(async (quote) => {
-    if (!gmailTokenRef.current || !quote.thread_id || !quote.broker_email) return false;
-    const firstName = (quote.broker_name || "").split(" ")[0] || "there";
-    const body = [
-      `Hi ${firstName},`,
-      "",
-      `Just following up on the freight quote we sent for the shipment from ${quote.origin} to ${quote.dest_city}, ${quote.dest_state}.`,
-      "",
-      "Has the load been confirmed? Please let us know if you'd like to proceed or if the load is no longer available.",
-      "",
-      `Thank you,`,
-      contactRef.current,
-      "BDR International Ltd.",
-      phoneRef.current,
-    ].join("\n");
-    const subj = quote.email_subject
-      ? (quote.email_subject.startsWith("Re:") ? quote.email_subject : `Re: ${quote.email_subject}`)
-      : "Re: Freight Quote Follow-up";
-    const raw = buildReplyRaw(quote.broker_email, subj, body, quote.thread_id, null);
-    try {
-      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${gmailTokenRef.current}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ raw, threadId: quote.thread_id }),
-      });
-      return res.ok;
-    } catch(e) { return false; }
-  }, []);
-
-  const checkThreadForReplies = useCallback(async (quote) => {
-    if (!gmailTokenRef.current || !quote.thread_id) return;
-    try {
-      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${quote.thread_id}?format=full`, {
-        headers: { Authorization: `Bearer ${gmailTokenRef.current}` }
-      });
-      const thread = await res.json();
-      if (!thread.messages?.length) return;
-
-      const lastCheck = quote.last_reply_checked || quote.followup_sent_at || quote.quoted_at || quote.timestamp;
-      const myEmail   = (gmailUserRef.current || "").toLowerCase();
-
-      // Find messages newer than lastCheck that aren't from us
-      const newReplies = thread.messages.filter(m => {
-        const ts = parseInt(m.internalDate || 0);
-        const fromHdr = (m.payload?.headers || []).find(h => h.name === "From")?.value || "";
-        const isFromMe = myEmail && fromHdr.toLowerCase().includes(myEmail);
-        return ts > lastCheck && !isFromMe;
-      });
-
-      if (!newReplies.length) return;
-
-      const latest    = newReplies[newReplies.length - 1];
-      const replyBody = getEmailBody(latest.payload);
-      if (!replyBody) return;
-
-      const classification = await classifyBrokerReply(replyBody);
-      const now = Date.now();
-      await updateQuoteFields(quote.timestamp, { last_reply_checked: now });
-
-      if (classification.type === "no_not_coming") {
-        await updateQuoteOutcome(quote.timestamp, "lost");
-        const hdrs       = latest.payload?.headers || [];
-        const fromAddr   = hdrs.find(h => h.name === "From")?.value || quote.broker_email;
-        const subject    = hdrs.find(h => h.name === "Subject")?.value || "";
-        const inReplyTo  = hdrs.find(h => h.name === "Message-ID")?.value;
-        const thankYou   = `Thank you for letting me know.\n\nBest regards,\n${contactRef.current}\nBDR International Ltd.\n${phoneRef.current}`;
-        const raw        = buildReplyRaw(fromAddr, subject, thankYou, quote.thread_id, inReplyTo);
-        await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${gmailTokenRef.current}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ raw, threadId: quote.thread_id }),
-        }).catch(() => {});
-      } else if (classification.type === "yes_sending") {
-        await updateQuoteOutcome(quote.timestamp, "broker_sending");
-      } else if (classification.type === "counter") {
-        const hdrs      = latest.payload?.headers || [];
-        const inReplyTo = hdrs.find(h => h.name === "Message-ID")?.value;
-        await updateQuoteFields(quote.timestamp, {
-          outcome: "counter",
-          counter_offer: classification.amount || null,
-          counter_reply_text: replyBody.slice(0, 800),
-          counter_reply_to: inReplyTo,
-          counter_at: now,
-        });
-      }
-    } catch(e) {}
-  }, []);
-
-  const respondToCounter = useCallback(async (quote, action, counterAmount) => {
-    if (!gmailTokenRef.current || !quote.thread_id) return;
-    const firstName  = (quote.broker_name || "").split(" ")[0] || "there";
-    const subj = quote.email_subject
-      ? (quote.email_subject.startsWith("Re:") ? quote.email_subject : `Re: ${quote.email_subject}`)
-      : "Re: Freight Quote";
-    let body = "";
-    if (action === "accept") {
-      body = `Hi ${firstName},\n\nThank you — we can accept the rate of $${quote.counter_offer} CAD. Please send the BOL/load sheet when ready and we'll get it confirmed.\n\nBest regards,\n${contactRef.current}\nBDR International Ltd.\n${phoneRef.current}`;
-      await updateQuoteFields(quote.timestamp, { outcome: "broker_sending", total: quote.counter_offer, base_rate: quote.counter_offer, counter_resolved: "accepted" });
-    } else if (action === "decline") {
-      body = `Hi ${firstName},\n\nThank you for the counter, however we are unable to accommodate that rate at this time. We appreciate the opportunity and hope to work together on a future load.\n\nBest regards,\n${contactRef.current}\nBDR International Ltd.\n${phoneRef.current}`;
-      await updateQuoteFields(quote.timestamp, { outcome: "lost", counter_resolved: "declined" });
-    } else if (action === "counter" && counterAmount) {
-      body = `Hi ${firstName},\n\nThank you for coming back to us. Our best rate for this lane is $${counterAmount} CAD — we're not able to go lower given current capacity. Please let us know if that works.\n\nBest regards,\n${contactRef.current}\nBDR International Ltd.\n${phoneRef.current}`;
-      await updateQuoteFields(quote.timestamp, { outcome: "waiting", total: counterAmount, base_rate: counterAmount, counter_resolved: "countered", last_reply_checked: Date.now() });
-    }
-    if (body) {
-      const raw = buildReplyRaw(quote.broker_email, subj, body, quote.thread_id, quote.counter_reply_to || null);
-      await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${gmailTokenRef.current}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ raw, threadId: quote.thread_id }),
-      }).catch(() => {});
-    }
-  }, []);
-
-  // Periodic check: runs every 5 minutes while Gmail is connected
-  useEffect(() => {
-    if (!gmailToken) return;
-    const run = async () => {
-      const now     = Date.now();
-      const ONE_HR  = 3600000;
-      const FOUR_HR = 14400000;
-      for (const quote of historyRef.current) {
-        // Auto follow-up disabled — enable when ready
-        // Check for broker replies on waiting & broker_sending quotes
-        if ((quote.outcome === "waiting" || quote.outcome === "broker_sending" || quote.outcome === "counter") && quote.thread_id) {
-          await checkThreadForReplies(quote);
-          await new Promise(r => setTimeout(r, 3000));
-        }
-      }
-    };
-    run(); // run immediately on connect
-    const interval = setInterval(run, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [gmailToken, sendFollowUpEmail, checkThreadForReplies]);
-
-  // Auto-refresh inbox every 60 seconds (10s was firing too many API calls)
-  useEffect(() => {
-    if (!gmailToken) return;
-    const interval = setInterval(() => fetchInbox(gmailToken), 60000);
-    return () => clearInterval(interval);
-  }, [gmailToken, fetchInbox]);
 
   const handleFieldChange = (key, value, current) => {
     const updated = { ...current, [key]: value };
@@ -2099,7 +1304,7 @@ export default function App() {
       const isFirst = i === firstServiceableIdx;
       // For the active shipment, reuse the already-resolved rate
       if (i === activeIdx && rateResult?.base) {
-        const qt = buildQuoteText(s, rateCity, rateResult, fsc, accs, customAcc, contact, company, phone, isFirst);
+        const qt = buildQuoteText(s, rateCity, rateResult, fsc, accs, customAcc, BDR_SIGNATURE.name, BDR_SIGNATURE.company, BDR_SIGNATURE.phone, isFirst);
         return { qt, rr: rateResult, rc: rateCity };
       }
       if (!lat || !lon) return { qt: "", rr: null, rc: null };
@@ -2107,14 +1312,17 @@ export default function App() {
       const origin = isInbound ? (s.dest_state === "QC" ? "Quebec" : "Ontario") : s.origin;
       const rr = getRate(origin, rc, s.skids, s.weight_lbs, s.line_items, s.footage, dir);
       if (!rr?.base) return { qt: "", rr, rc };
-      const qt = buildQuoteText(s, rc, rr, fsc, accs, customAcc, contact, company, phone, isFirst);
+      const qt = buildQuoteText(s, rc, rr, fsc, accs, customAcc, BDR_SIGNATURE.name, BDR_SIGNATURE.company, BDR_SIGNATURE.phone, isFirst);
       return { qt, rr, rc };
     });
 
     const allQts   = results.map(r => r.qt);
     const allRates = results.map(r => ({ base: r.rr?.base, total: r.rr ? r5(r.rr.base*(1+fsc)) : null, rateCity: r.rc, rateResult: r.rr, unserviced: r.unserviced || null }));
+    const baseTimestamp = Date.now();
+    const timestamps = shipments.map((_, i) => baseTimestamp + i);
     setQuoteTexts(allQts);
     setAllShipmentRates(allRates);
+    setQuoteTimestamps(timestamps);
     setQuoteText(allQts[activeIdx] || allQts[0] || "");
     setStep("result");
 
@@ -2122,17 +1330,56 @@ export default function App() {
       if (!qt || !rr) return;
       const s = shipments[i];
       saveQuote({
-        timestamp: Date.now() + i,
+        timestamp: timestamps[i],
         date: new Date().toLocaleDateString("en-CA"),
         time: new Date().toLocaleTimeString("en-CA", {hour:"2-digit",minute:"2-digit"}),
-        broker_name: s.broker_name || "—", broker_company: s.broker_company || "",
+        broker_name: s.broker_name || brokerName || "—", broker_company: s.broker_company || brokerCompany || "",
+        broker_email: brokerEmail || "", broker_phone: brokerPhone || "",
         origin: s.origin || "", dest_city: s.dest_city || "", dest_state: s.dest_state || "",
+        direction: s.direction || "outbound",
         skids: s.skids, weight_lbs: s.weight_lbs,
         base_rate: rr.base, fsc, total: r5(rr.base*(1+fsc)),
         rate_city: rc?.city, basis_label: rr.basisLabel, charge_skids: SKID_LABELS[rr.chargeIdx],
         quote_text: qt,
       });
     });
+  };
+
+  const sendQuoteEmail = async (idx) => {
+    const s   = (shipments.length > 0 ? shipments : [parsed])[idx];
+    const asr = allShipmentRates[idx] || {};
+    const qt  = quoteTexts[idx] || "";
+    const timestamp = quoteTimestamps[idx];
+    if (!s || !timestamp || !qt) return;
+
+    setEmailSendState(prev => ({ ...prev, [idx]: "sending" }));
+    try {
+      const res = await fetch("/api/send-quote-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          timestamp,
+          date: new Date().toLocaleDateString("en-CA"),
+          time: new Date().toLocaleTimeString("en-CA", {hour:"2-digit",minute:"2-digit"}),
+          broker_name: s.broker_name || brokerName || "—",
+          broker_company: s.broker_company || brokerCompany || "",
+          broker_email: brokerEmail || "",
+          broker_phone: brokerPhone || "",
+          origin: s.origin || "", dest_city: s.dest_city || "", dest_state: s.dest_state || "",
+          direction: s.direction || "outbound",
+          skids: s.skids, weight_lbs: s.weight_lbs,
+          base_rate: asr.base, fsc, total: asr.total,
+          rate_city: asr.rateCity?.city, basis_label: asr.rateResult?.basisLabel,
+          quote_text: qt,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "send_failed");
+      setEmailSendState(prev => ({ ...prev, [idx]: "sent" }));
+    } catch (e) {
+      console.error("Could not send quote email:", e);
+      setEmailSendState(prev => ({ ...prev, [idx]: "error" }));
+    }
   };
 
   const base        = rateResult?.base;
@@ -2147,7 +1394,7 @@ export default function App() {
   // ── Capacity alerts ───────────────────────────────────────────
   useEffect(() => {
     const TRUCK_FT = 53;
-    const boardLoads = history.filter(q => q.outcome === "received" || q.outcome === "broker_sending");
+    const boardLoads = history.filter(q => q.outcome === "received" || q.outcome === "broker_sending" || q.outcome === "accepted");
     const alerts = [];
     // Unassigned loads alert
     if (boardLoads.length > 0 && truckDays.length === 0 && recurringTrucks.length === 0) {
@@ -2159,8 +1406,8 @@ export default function App() {
   // ── Agent chat ────────────────────────────────────────────────
   const callAgent = useCallback(async (userMessage) => {
     const DAYS_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-    const boardLoads = history.filter(q => q.outcome === "received" || q.outcome === "broker_sending");
-    const confirmed  = boardLoads.filter(q => q.outcome === "received");
+    const boardLoads = history.filter(q => q.outcome === "received" || q.outcome === "broker_sending" || q.outcome === "accepted");
+    const confirmed  = boardLoads.filter(q => q.outcome === "received" || q.outcome === "accepted");
     const incoming   = boardLoads.filter(q => q.outcome === "broker_sending");
     const systemPrompt = `You are a freight dispatch AI assistant for BDR International, a Canadian LTL freight carrier (Aylmer, ON, est. 1989). Help the dispatcher manage their board efficiently.
 
@@ -2180,18 +1427,13 @@ ${recurringTrucks.map(rt=>`• Every ${DAYS_NAMES[rt.dayOfWeek]} | ${rt.route} |
 Drivers (${drivers.length}):
 ${drivers.map(dr=>`• ${dr.name}${dr.truckNumber?" (Truck #"+dr.truckNumber+")":""}${dr.defaultDay!=null?" | Departs "+DAYS_NAMES[dr.defaultDay]:""}${(dr.lanes||[]).length?" | Lanes: "+dr.lanes.join(", "):""}${dr.partTime?" | Part-time":""}${dr.worksDock?" | Works dock":""}`).join("\n")||"  None"}
 
-Be concise and actionable. When asked for recommendations, be specific about which driver/truck fits which load and why. You can trigger an inbox scan to check for new emails. You can also add recurring weekly trucks to the schedule — if the user says something like "add a truck every Tuesday to Detroit" use the add_weekly_truck tool immediately without asking for confirmation.`;
+Be concise and actionable. When asked for recommendations, be specific about which driver/truck fits which load and why. You can add recurring weekly trucks to the schedule — if the user says something like "add a truck every Tuesday to Detroit" use the add_weekly_truck tool immediately without asking for confirmation.`;
 
     const newMessages = [...agentMessages, { role:"user", content: userMessage }];
     setAgentMessages(newMessages);
     setAgentLoading(true);
 
     const TOOLS = [
-      {
-        name: "scan_inbox",
-        description: "Scan Gmail inbox for new load sheet emails and auto-process them into the board",
-        input_schema: { type:"object", properties:{} }
-      },
       {
         name: "add_weekly_truck",
         description: "Add a recurring weekly truck to the capacity schedule. Use when the user asks to add a truck that runs every week on a specific day.",
@@ -2222,11 +1464,6 @@ Be concise and actionable. When asked for recommendations, be specific about whi
       const toolUses = (data.content||[]).filter(b=>b.type==="tool_use");
       if (toolUses.length > 0) {
         const toolResults = await Promise.all(toolUses.map(async tu => {
-          if (tu.name === "scan_inbox") {
-            if (gmailTokenRef.current) fetchInboxRef.current?.(gmailTokenRef.current);
-            else return { type:"tool_result", tool_use_id:tu.id, content:"Gmail not connected — user needs to sign in first." };
-            return { type:"tool_result", tool_use_id:tu.id, content:"Inbox scan triggered. New load sheets will be auto-processed." };
-          }
           if (tu.name === "add_weekly_truck") {
             const { dayOfWeek, route, numTrucks = 1, driver = "" } = tu.input;
             const rt = {
@@ -2323,7 +1560,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
           <img src="https://bdrint.ca/wp-content/themes/bdr-international/images/logos/bdr-international-logo.png" alt="BDR International Ltd." style={{ height:56, objectFit:"contain" }}/>
           {/* Nav links */}
           <nav style={{ display:"flex", alignItems:"center", gap:4 }}>
-            {[["quote","Quote"],["gmail","Gmail"],["history","History"]].map(([t,l]) => (
+            {[["quote","Quote"],["history","History"]].map(([t,l]) => (
               <button key={t} onClick={()=>setTab(t)} className="nav-link-btn" style={{
                 padding:"8px 20px", background:"none", border:"none",
                 borderBottom: tab===t ? `3px solid ${C.amber}` : "3px solid transparent",
@@ -2351,21 +1588,23 @@ Be concise and actionable. When asked for recommendations, be specific about whi
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
             <div>
               <div style={{ fontSize:20, fontWeight:700, color:C.navy }}>
-                {historyView === "pipeline" ? "Delivery Pipeline" : "Quote History"}
+                {historyView === "pipeline" ? "Delivery Pipeline" : historyView === "customers" ? "Customers" : "Quote History"}
               </div>
               <div style={{ fontSize:13, color:C.muted, marginTop:2 }}>
                 {historyView === "pipeline"
                   ? `${history.filter(q=>q.outcome==="received").length} received · ${history.filter(q=>q.outcome==="pending").length} pending`
+                  : historyView === "customers"
+                  ? `${brokers.length} customer${brokers.length!==1?"s":""} tracked`
                   : `${history.length} of 500 quotes saved`}
               </div>
             </div>
             <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-              {historyView === "quotes" && (
-                <input value={histSearch} onChange={e=>setHistSearch(e.target.value)} placeholder="Search broker, city, state…"
+              {(historyView === "quotes" || historyView === "customers") && (
+                <input value={histSearch} onChange={e=>setHistSearch(e.target.value)} placeholder={historyView==="customers" ? "Search customer, email…" : "Search broker, city, state…"}
                   style={{ ...input, width:220, fontSize:14 }}/>
               )}
               <div style={{ display:"flex", border:`1.5px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
-                {[["quotes","📋 Quotes"],["pipeline","📦 Pipeline"]].map(([v,l]) => (
+                {[["quotes","📋 Quotes"],["pipeline","📦 Pipeline"],["customers","👥 Customers"]].map(([v,l]) => (
                   <button key={v} onClick={()=>setHistoryView(v)}
                     style={{ padding:"8px 18px", fontSize:13, fontWeight:historyView===v?700:400, background:historyView===v?C.navy:"#fff", color:historyView===v?"#fff":C.muted, border:"none", cursor:"pointer" }}>
                     {l}
@@ -2379,7 +1618,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
           {/* ── PIPELINE VIEW ── */}
           {historyView === "pipeline" && historyLoaded && (() => {
-            const received = history.filter(q => q.outcome === "received").sort((a,b) => (a.pickup_date||"").localeCompare(b.pickup_date||"") || a.timestamp - b.timestamp);
+            const received = history.filter(q => q.outcome === "received" || q.outcome === "accepted").sort((a,b) => (a.pickup_date||"").localeCompare(b.pickup_date||"") || a.timestamp - b.timestamp);
             const counters = history.filter(q => q.outcome === "counter").sort((a,b) => b.counter_at - a.counter_at);
             const pending  = history.filter(q => q.outcome === "pending" || q.outcome === "waiting" || q.outcome === "broker_sending").sort((a,b) => b.timestamp - a.timestamp).slice(0, 20);
             const declined = history.filter(q => q.outcome === "declined");
@@ -2622,21 +1861,6 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                   <div style={{ fontSize:15, fontWeight:700, color:"#0369a1" }}>${r5(q.total)}</div>
                                 </div>
                               )}
-                              {q.gmail_msg_id && q.pdf_attachment_id && (
-                                <button onClick={async () => {
-                                  if (!gmailToken) { alert("Connect Gmail to view PDF"); return; }
-                                  try {
-                                    const b64 = await fetchGmailPdfBase64(gmailToken, q.gmail_msg_id, q.pdf_attachment_id);
-                                    const bin = atob(b64);
-                                    const bytes = new Uint8Array(bin.length);
-                                    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                                    const blob = new Blob([bytes], { type: "application/pdf" });
-                                    window.open(URL.createObjectURL(blob), "_blank");
-                                  } catch(e) { alert("Could not load PDF: " + e.message); }
-                                }} style={{ marginLeft:"auto", padding:"6px 14px", background:"#0369a1", color:"#fff", border:"none", borderRadius:6, fontSize:12, fontWeight:600, cursor:"pointer", flexShrink:0 }}>
-                                  📄 View PDF
-                                </button>
-                              )}
                             </div>
                           </div>
                         </div>
@@ -2648,6 +1872,83 @@ Be concise and actionable. When asked for recommendations, be specific about whi
               </>
             );
           })()}
+
+          {/* ── CUSTOMERS VIEW — internal only, brokers never see this ── */}
+          {historyView === "customers" && (
+            <>
+              {!brokersLoaded && <div style={{ color:C.muted, fontSize:14 }}>Loading…</div>}
+              {brokersLoaded && brokers.length === 0 && (
+                <div style={{ ...card, textAlign:"center", padding:48, color:C.muted }}>
+                  <div style={{ fontSize:32, marginBottom:12 }}>👥</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:C.navy }}>No customers tracked yet</div>
+                  <div style={{ fontSize:14, marginTop:4 }}>Customers who request a quote will show up here automatically.</div>
+                </div>
+              )}
+              {brokers
+                .filter(b => {
+                  if (!histSearch) return true;
+                  const s = histSearch.toLowerCase();
+                  return [b.company_name, b.primary_contact_name, b.primary_email].some(f => (f||"").toLowerCase().includes(s));
+                })
+                .map(b => {
+                  const isOpen = expandedBroker === b.id;
+                  const brokerQuotes = history.filter(q => (q.broker_email||"").toLowerCase() === (b.primary_email||"").toLowerCase()
+                    || (q.broker_company||"").toLowerCase().includes((b.company_name||"").toLowerCase()));
+                  return (
+                    <div key={b.id} style={{ ...card, marginBottom:10, padding:0, overflow:"hidden" }}>
+                      <div style={{ display:"flex", alignItems:"stretch" }}>
+                        <div style={{ width:4, background:C.amber, flexShrink:0 }}/>
+                        <div style={{ flex:1, padding:"14px 18px", display:"flex", alignItems:"center", gap:20, flexWrap:"wrap" }}>
+                          <div style={{ minWidth:160 }}>
+                            <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Customer</div>
+                            <div style={{ fontSize:14, fontWeight:700, color:C.navy }}>{b.company_name}</div>
+                            {b.primary_contact_name && <div style={{ fontSize:12, color:C.muted }}>{b.primary_contact_name}</div>}
+                          </div>
+                          <div style={{ minWidth:160 }}>
+                            <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Email / Phone</div>
+                            <div style={{ fontSize:13, color:C.text }}>{b.primary_email || "—"}</div>
+                            {b.phone && <div style={{ fontSize:12, color:C.muted }}>{b.phone}</div>}
+                          </div>
+                          <div style={{ minWidth:80 }}>
+                            <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Quotes</div>
+                            <div style={{ fontSize:14, fontWeight:600, color:C.text }}>{b.quote_count}</div>
+                          </div>
+                          <div style={{ minWidth:80 }}>
+                            <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Won</div>
+                            <div style={{ fontSize:14, fontWeight:600, color:C.green }}>{b.won_count}</div>
+                          </div>
+                          <div style={{ minWidth:100 }}>
+                            <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Lifetime Revenue</div>
+                            <div style={{ fontSize:18, fontWeight:800, color:C.amber }}>${r5(Number(b.lifetime_revenue)||0)}</div>
+                          </div>
+                          <div style={{ minWidth:100 }}>
+                            <div style={{ fontSize:11, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em" }}>Last Quote</div>
+                            <div style={{ fontSize:13, color:C.text }}>{b.last_quote_at ? new Date(b.last_quote_at).toLocaleDateString("en-CA") : "—"}</div>
+                          </div>
+                          <button onClick={()=>setExpandedBroker(isOpen ? null : b.id)}
+                            style={{ marginLeft:"auto", padding:"6px 14px", fontSize:12, fontWeight:600, borderRadius:6, cursor:"pointer", background:"#efe8dc", color:C.navy, border:`1px solid ${C.border}` }}>
+                            {isOpen ? "▲ Hide" : `▼ View ${brokerQuotes.length} quote${brokerQuotes.length!==1?"s":""}`}
+                          </button>
+                        </div>
+                      </div>
+                      {isOpen && (
+                        <div style={{ padding:"0 18px 14px 22px", borderTop:`1px solid ${C.border}` }}>
+                          {brokerQuotes.length === 0 && <div style={{ fontSize:13, color:C.muted, paddingTop:12 }}>No local quotes matched — this customer may have quoted from another device.</div>}
+                          {brokerQuotes.map(q => (
+                            <div key={q.timestamp} style={{ display:"flex", alignItems:"center", gap:16, padding:"10px 0", borderBottom:`1px solid ${C.border}`, fontSize:13 }}>
+                              <div style={{ color:C.muted, minWidth:80 }}>{q.date}</div>
+                              <div style={{ flex:1 }}>{q.origin} → {q.dest_city}, {q.dest_state} · {q.skids} skids</div>
+                              <div style={{ fontWeight:700, color:C.navy }}>${r5(q.total)}</div>
+                              <div style={{ color:C.muted, textTransform:"capitalize" }}>{q.outcome}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </>
+          )}
 
           {/* ── QUOTES VIEW ── */}
           {historyView === "quotes" && (
@@ -2666,8 +1967,8 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   return [q.broker_name, q.broker_company, q.dest_city, q.dest_state, q.origin].some(f => (f||"").toLowerCase().includes(s));
                 })
                 .map(q => {
-                  const outcomeColor = q.outcome==="received" ? C.green : q.outcome==="lost" ? C.error : q.outcome==="waiting" ? "#c2410c" : q.outcome==="broker_sending" ? "#7c3aed" : q.outcome==="declined" ? "#6b7280" : C.amber;
-                  const outcomeBg    = q.outcome==="received" ? "#f0fdf4" : q.outcome==="lost" ? "#fef2f2" : q.outcome==="waiting" ? "#fff7ed" : q.outcome==="broker_sending" ? "#f5f3ff" : q.outcome==="declined" ? "#f7f4ee" : C.card;
+                  const outcomeColor = q.outcome==="accepted" ? "#0369a1" : q.outcome==="received" ? C.green : q.outcome==="lost" ? C.error : q.outcome==="waiting" ? "#c2410c" : q.outcome==="broker_sending" ? "#7c3aed" : q.outcome==="declined" ? "#6b7280" : C.amber;
+                  const outcomeBg    = q.outcome==="accepted" ? "#eff6ff" : q.outcome==="received" ? "#f0fdf4" : q.outcome==="lost" ? "#fef2f2" : q.outcome==="waiting" ? "#fff7ed" : q.outcome==="broker_sending" ? "#f5f3ff" : q.outcome==="declined" ? "#f7f4ee" : C.card;
                   return (
                     <div key={q.timestamp} style={{ ...card, marginBottom:10, padding:0, overflow:"hidden", background:outcomeBg }}>
                       <div style={{ display:"flex", alignItems:"stretch" }}>
@@ -2767,504 +2068,6 @@ Be concise and actionable. When asked for recommendations, be specific about whi
           )}
         </div>
 
-      ) : tab === "gmail" ? (
-        /* ══ GMAIL TAB ══ */
-        <div style={{ maxWidth:1400, margin:"0 auto", padding:"28px 32px" }}>
-          {!gmailToken ? (
-            <div style={{ textAlign:"center", padding:"80px 32px" }}>
-              <div style={{ fontSize:52, marginBottom:16 }}>📬</div>
-              <div style={{ fontSize:22, fontWeight:700, color:C.navy, marginBottom:8 }}>Connect Your Gmail</div>
-              <div style={{ fontSize:15, color:C.muted, marginBottom:28, maxWidth:420, margin:"0 auto 28px" }}>
-                Read quote requests from your inbox, auto-calculate rates, and send replies — all from here.
-              </div>
-              <button onClick={connectGmail}
-                style={{ padding:"14px 36px", background:C.burgundy, color:"#fff", border:"none", borderRadius:8, fontSize:16, fontWeight:700, cursor:"pointer" }}>
-                Connect Gmail Account
-              </button>
-              {!GOOGLE_CLIENT_ID && (
-                <div style={{ marginTop:20, padding:"12px 20px", background:"#fffbeb", border:"1px solid #fcd34d", borderRadius:8, fontSize:13, color:"#92400e", maxWidth:480, margin:"20px auto 0" }}>
-                  ⚠ Add your <strong>VITE_GOOGLE_CLIENT_ID</strong> to <code>.env</code> and restart the server first.
-                </div>
-              )}
-            </div>
-          ) : (() => {
-            const quoteEmails = gmailEmails.filter(e => ["quote_ready","processing","unserviced","ignored"].includes(gmailQuotes[e.id]?.status));
-            const sentEmails  = gmailEmails.filter(e => ["sent","load_sheet"].includes(gmailQuotes[e.id]?.status));
-            const otherEmails = gmailEmails.filter(e => {
-              const s = gmailQuotes[e.id]?.status;
-              return !s || s === "error" || s === "not_quote" || s === "classified";
-            });
-            const CLASS_LABELS = { booking:"📦 Booking", tracking:"🔍 Tracking", check_in:"💬 Check-in", invoice:"🧾 Invoice", spam:"🗑 Spam", other:"📎 Other" };
-            return (
-              <>
-                {/* Header */}
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20, flexWrap:"wrap", gap:12 }}>
-                  <div>
-                    <div style={{ fontSize:20, fontWeight:700, color:C.navy }}>Gmail</div>
-                    <div style={{ fontSize:13, color:C.muted }}>{gmailUser} · {gmailEmails.length} emails loaded</div>
-                  </div>
-                  <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                    <button onClick={scanAllEmails} disabled={scanningAll||gmailLoading}
-                      style={{ padding:"9px 18px", background:C.navy, color:"#fff", border:"none", borderRadius:7, fontSize:13, fontWeight:700, cursor:scanningAll?"not-allowed":"pointer", opacity:scanningAll?0.7:1 }}>
-                      {scanningAll ? "⟳ Scanning…" : "⚡ Scan All"}
-                    </button>
-                    <button onClick={()=>fetchInbox(gmailToken)} disabled={gmailLoading}
-                      style={{ padding:"9px 16px", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
-                      {gmailLoading ? "⟳" : "↻ Refresh"}
-                    </button>
-                    <button
-                      onClick={scanAllLoadSheets}
-                      disabled={scanState?.status === "scanning"}
-                      style={{ padding:"9px 16px", background: scanState?.status === "scanning" ? "#e3c9d1" : C.amberLight, color:C.amber, border:"1.5px solid #e3c9d1", borderRadius:7, fontSize:13, cursor: scanState?.status === "scanning" ? "default" : "pointer", fontWeight:600 }}>
-                      {scanState?.status === "scanning"
-                        ? `Scanning… ${scanState.processed}/${scanState.found}`
-                        : scanState?.status === "done"
-                        ? `✓ Scan done · ${scanState.added} added`
-                        : "🔍 Scan All Emails"}
-                    </button>
-                    {/* Rate sheet PDF — auto-captured from incoming emails */}
-                    {rateSheetB64 && (
-                      <button onClick={() => {
-                        const bin = atob(rateSheetB64);
-                        const bytes = new Uint8Array(bin.length);
-                        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                        const blob = new Blob([bytes], { type:"application/pdf" });
-                        window.open(URL.createObjectURL(blob), "_blank");
-                      }} style={{ padding:"9px 14px", background:"#f0fdf4", color:C.green, border:`1.5px solid #bbf7d0`, borderRadius:7, fontSize:13, fontWeight:600, cursor:"pointer" }}>
-                        📄 Rate Sheet
-                      </button>
-                    )}
-                    <button onClick={()=>{ setGmailToken(null); setGmailUser(null); setGmailEmails([]); setGmailQuotes({}); }}
-                      style={{ padding:"9px 16px", background:"#fff", color:C.subtle, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
-                      Disconnect
-                    </button>
-                  </div>
-                </div>
-
-                {gmailLoading && !gmailEmails.length && (
-                  <div style={{ textAlign:"center", padding:40, color:C.muted, fontSize:15 }}>
-                    <span style={{ fontSize:24 }}>⟳</span>
-                    <div style={{ marginTop:8 }}>Loading inbox…</div>
-                  </div>
-                )}
-
-                {/* Two-column layout */}
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 380px", gap:20, alignItems:"start" }}>
-
-                  {/* ── LEFT: Quote Requests ── */}
-                  <div>
-                    <div style={{ fontSize:15, fontWeight:700, color:C.navy, marginBottom:12, display:"flex", alignItems:"center", gap:8 }}>
-                      📨 Quote Requests
-                      <span style={{ fontSize:13, fontWeight:400, color:C.muted }}>({quoteEmails.length})</span>
-                    </div>
-
-                    {quoteEmails.length === 0 && !gmailLoading && (
-                      <div style={{ ...card, textAlign:"center", padding:32, color:C.muted }}>
-                        <div style={{ fontSize:24, marginBottom:8 }}>📭</div>
-                        No quote requests in inbox
-                      </div>
-                    )}
-
-                    {quoteEmails.map(email => {
-                      const q        = gmailQuotes[email.id];
-                      const hdrs     = email.payload?.headers || [];
-                      const subject  = hdrs.find(h=>h.name==="Subject")?.value || "(no subject)";
-                      const from     = hdrs.find(h=>h.name==="From")?.value || "";
-                      const date     = hdrs.find(h=>h.name==="Date")?.value || "";
-                      const fromName = from.replace(/<.*>/, "").trim() || from;
-                      const isUnread = email.labelIds?.includes("UNREAD");
-                      const isSending = sendingIds.has(email.id);
-                      const expanded   = gmailExpandedId === email.id;
-                      if (q?.status === "declined") return (
-                        <div key={email.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background:"#f7f4ee", border:`1px solid ${C.border}`, borderRadius:8, marginBottom:5, opacity:0.6 }}>
-                          <div style={{ flex:1, minWidth:0 }}>
-                            <span style={{ fontSize:12, fontWeight:500, color:C.text }}>{fromName}</span>
-                            <span style={{ fontSize:11, color:C.subtle, marginLeft:8 }}>{subject}</span>
-                          </div>
-                          <span style={{ fontSize:11, fontWeight:600, color:C.subtle, padding:"1px 7px", background:"#efe8dc", borderRadius:10 }}>✗ Declined</span>
-                        </div>
-                      );
-                      if (q?.status === "ignored") return (
-                        <div key={email.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background:"#f7f4ee", border:`1px solid ${C.border}`, borderRadius:8, marginBottom:5, opacity:0.45 }}>
-                          <div style={{ flex:1, minWidth:0 }}>
-                            <span style={{ fontSize:12, fontWeight:500, color:C.text }}>{fromName}</span>
-                            <span style={{ fontSize:11, color:C.subtle, marginLeft:8 }}>{subject}</span>
-                          </div>
-                          <span style={{ fontSize:11, color:C.subtle }}>Ignored</span>
-                          <button onClick={() => setGmailQuotes(prev => ({ ...prev, [email.id]: { ...prev[email.id], status: "quote_ready" } }))}
-                            style={{ fontSize:11, padding:"2px 9px", borderRadius:6, border:`1px solid ${C.border}`, background:"#fff", color:C.navy, cursor:"pointer", flexShrink:0 }}>
-                            Restore
-                          </button>
-                        </div>
-                      );
-                      // Normalize to quotes[] array — supports old flat structure and new multi-quote
-                      const quotesArr = q?.quotes || (q?.parsed ? [{ parsed: q.parsed, rateCity: q.rateCity, rateResult: q.rateResult, quoteText: q.quoteText||"", emailFsc: q.emailFsc??0.18, emailAccs: q.emailAccs||{}, emailCustomAcc: q.emailCustomAcc||"" }] : []);
-                      const activeQIdx   = gmailQuoteTabIdx[email.id] ?? 0;
-                      const activeQ      = quotesArr[Math.min(activeQIdx, Math.max(quotesArr.length - 1, 0))] || null;
-                      const fscVal       = activeQ?.emailFsc ?? 0.18;
-                      const accsVal      = activeQ?.emailAccs || {};
-                      const customAccVal = activeQ?.emailCustomAcc || "";
-                      const floorloaded  = !!accsVal["fl"];
-                      const calcSubtotal = activeQ?.rateResult?.base ? r5(activeQ.rateResult.base * (1 + fscVal)) : null;
-                      const afterFloor   = calcSubtotal ? (floorloaded ? r5(calcSubtotal * 1.10) : calcSubtotal) : null;
-                      const fixedAccs    = (accsVal["da"] ? 75 : 0) + (accsVal["lg"] ? 75 : 0) + (accsVal["nc"] ? 150 : 0) + (accsVal["st"] ? 100 : 0) + (parseFloat(customAccVal) || 0);
-                      const calcTotal    = afterFloor ? r5(afterFloor + fixedAccs) : null;
-                      const accList      = ACC_OPTS.filter(a => accsVal[a.id] && a.id !== "fl");
-
-                      return (
-                        <div key={email.id} style={{ ...card, padding:0, overflow:"hidden", marginBottom:10,
-                          border:`1.5px solid ${expanded?C.amber:q?.status==="quote_ready"?"#bbf7d0":q?.status==="unserviced"?"#fde68a":C.border}` }}>
-
-                          {/* Collapsed header — always visible */}
-                          <div onClick={()=>setGmailExpandedId(p => p===email.id ? null : email.id)}
-                            style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", cursor:"pointer", background: expanded?"#f0f9ff":"#fff" }}>
-                            <div style={{ flex:1, minWidth:0 }}>
-                              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2, flexWrap:"wrap" }}>
-                                <span style={{ fontSize:13, fontWeight:isUnread?700:500, color:C.navy, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{fromName}</span>
-                                {q?.status === "processing" && <span style={{ fontSize:11, fontWeight:600, color:"#f59e0b", padding:"1px 7px", background:"#fffbeb", borderRadius:10 }}>Processing…</span>}
-                                {q?.status === "quote_ready" && <span style={{ fontSize:11, fontWeight:600, color:C.green, padding:"1px 7px", background:"#f0fdf4", borderRadius:10 }}>{quotesArr.length > 1 ? `${quotesArr.length} Quotes Ready` : "Quote Ready"}</span>}
-                                {q?.status === "unserviced" && <span style={{ fontSize:11, fontWeight:600, color:C.amber, padding:"1px 7px", background:"#fffbeb", borderRadius:10 }}>No Service</span>}
-                              </div>
-                              <div style={{ fontSize:11, color:C.muted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                                {subject} · {new Date(date).toLocaleDateString("en-CA",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
-                              </div>
-                              {q?.status === "quote_ready" && !expanded && (
-                                <div style={{ fontSize:12, color:C.green, fontWeight:700, marginTop:2 }}>
-                                  {quotesArr.length > 1
-                                    ? quotesArr.filter(x=>!x.unserviced).map((x,i) => `${x.parsed?.dest_city||"?"}${x.parsed?.dest_state?", "+x.parsed.dest_state:""}`).join(" · ")
-                                    : `${activeQ?.parsed?.origin||activeQ?.parsed?.pickup_location} → ${activeQ?.parsed?.dest_city}, ${activeQ?.parsed?.dest_state} · ${activeQ?.parsed?.skids} skids${calcTotal?" · $"+calcTotal:""}`}
-                                </div>
-                              )}
-                            </div>
-                            <span style={{ fontSize:12, color:C.subtle, flexShrink:0 }}>{expanded ? "▲" : "▼"}</span>
-                          </div>
-
-                          {/* Expanded panel */}
-                          {expanded && (
-                            <div style={{ borderTop:`1px solid ${C.border}`, padding:"16px 16px", background:"#fafcff" }}>
-
-                              {q?.status === "processing" && (
-                                <div style={{ textAlign:"center", padding:24, color:C.muted }}>⟳ Processing quote…</div>
-                              )}
-
-                              {q?.status === "unserviced" && (
-                                <div style={{ padding:"12px 16px", background:"#fffbeb", borderRadius:8, color:"#92400e", fontSize:13 }}>
-                                  ⚠ We don't service this area (near {q.zone||q.city}). No rate available.
-                                </div>
-                              )}
-
-                              {q?.status === "quote_ready" && (
-                                <>
-                                  {/* Quote tabs — only shown when multiple shipments */}
-                                  {quotesArr.length > 1 && (
-                                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:14 }}>
-                                      {quotesArr.map((qItem, idx) => (
-                                        <button key={idx}
-                                          onClick={() => setGmailQuoteTabIdx(prev => ({ ...prev, [email.id]: idx }))}
-                                          style={{ padding:"6px 14px", fontSize:12, fontWeight:activeQIdx===idx?700:400, borderRadius:6, cursor:"pointer",
-                                            background: activeQIdx===idx ? C.navy : "#efe8dc",
-                                            color: activeQIdx===idx ? "#fff" : C.text,
-                                            border: `1.5px solid ${activeQIdx===idx ? C.navy : C.border}` }}>
-                                          Quote {idx+1}: {qItem.parsed?.dest_city||"?"}{qItem.parsed?.dest_state?`, ${qItem.parsed.dest_state}`:""}
-                                          {qItem.unserviced && <span style={{ color:"#f59e0b", marginLeft:4 }}>⚠</span>}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  )}
-
-                                  {activeQ?.unserviced && (
-                                    <div style={{ padding:"10px 14px", background:"#fffbeb", borderRadius:8, color:"#92400e", fontSize:13, marginBottom:12 }}>
-                                      ⚠ We don't service this area (near {activeQ.unserviced}). No rate available for this shipment.
-                                    </div>
-                                  )}
-
-                                  {!activeQ?.unserviced && (
-                                  <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:16, alignItems:"start" }}>
-                                  <div>{/* Left: quote controls */}
-                                  {/* Shipment summary bar */}
-                                  <div style={{ display:"flex", gap:14, flexWrap:"wrap", padding:"10px 14px", background:C.navy, borderRadius:8, marginBottom:14 }}>
-                                    <div>
-                                      <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Lane</div>
-                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{activeQ?.parsed?.pickup_location||activeQ?.parsed?.origin} → {activeQ?.parsed?.dest_city}, {activeQ?.parsed?.dest_state}</div>
-                                    </div>
-                                    <div>
-                                      <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Skids</div>
-                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{activeQ?.parsed?.skids||"—"}</div>
-                                    </div>
-                                    {activeQ?.parsed?.weight_lbs && <div>
-                                      <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Weight</div>
-                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>{Number(activeQ.parsed.weight_lbs).toLocaleString()} lbs</div>
-                                    </div>}
-                                    <div>
-                                      <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Base Rate</div>
-                                      <div style={{ fontSize:12, color:"#fff", fontWeight:600 }}>${r5(activeQ?.rateResult?.base||0)}</div>
-                                    </div>
-                                    {calcTotal && <div>
-                                      <div style={{ fontSize:10, color:"#aaa", textTransform:"uppercase" }}>Total ({(fscVal*100).toFixed(0)}% FSC{floorloaded?" +floor":""}) </div>
-                                      <div style={{ fontSize:18, color:"#fbbf24", fontWeight:800 }}>${calcTotal} CAD</div>
-                                    </div>}
-                                  </div>
-
-                                  {/* FSC selector */}
-                                  <div style={{ marginBottom:12 }}>
-                                    <div style={{ fontSize:11, fontWeight:700, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>Fuel Surcharge (FSC)</div>
-                                    <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-                                      {FSC_OPTS.map(o => (
-                                        <button key={o.v} onClick={()=>updateGmailQuoteSettings(email.id, activeQIdx, o.v, accsVal, customAccVal)}
-                                          style={{ padding:"6px 12px", fontSize:12, fontWeight:fscVal===o.v?700:400, borderRadius:6, cursor:"pointer",
-                                            background:fscVal===o.v?C.navy:"#efe8dc", color:fscVal===o.v?"#fff":C.text, border:`1.5px solid ${fscVal===o.v?C.navy:C.border}` }}>
-                                          {o.l}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </div>
-
-                                  {/* Accessories */}
-                                  <div style={{ marginBottom:12 }}>
-                                    <div style={{ fontSize:11, fontWeight:700, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>Accessorials</div>
-                                    <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-                                      {ACC_OPTS.map(a => (
-                                        <button key={a.id} onClick={()=>updateGmailQuoteSettings(email.id, activeQIdx, fscVal, {...accsVal,[a.id]:!accsVal[a.id]}, customAccVal)}
-                                          style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", fontWeight:accsVal[a.id]?600:400,
-                                            background:accsVal[a.id]?C.navy:"#efe8dc", color:accsVal[a.id]?"#fff":C.text, border:`1.5px solid ${accsVal[a.id]?C.navy:C.border}` }}>
-                                          {a.l} <span style={{ opacity:0.6, fontSize:11 }}>({a.n})</span>
-                                        </button>
-                                      ))}
-                                    </div>
-                                    <input value={customAccVal}
-                                      onChange={e=>updateGmailQuoteSettings(email.id, activeQIdx, fscVal, accsVal, e.target.value)}
-                                      placeholder="Custom accessorial charge…"
-                                      style={{ ...input, marginTop:6, fontSize:12 }}/>
-                                  </div>
-
-                                  {/* Editable quote text */}
-                                  <textarea
-                                    value={activeQ?.quoteText||""}
-                                    onChange={e => {
-                                      const newText = e.target.value;
-                                      setGmailQuotes(prev => {
-                                        const entry = prev[email.id];
-                                        const qArr = entry?.quotes || (entry?.parsed ? [{ parsed: entry.parsed, rateCity: entry.rateCity, rateResult: entry.rateResult, quoteText: entry.quoteText||"", emailFsc: entry.emailFsc??0.18, emailAccs: entry.emailAccs||{}, emailCustomAcc: entry.emailCustomAcc||"" }] : []);
-                                        const updated = qArr.map((item,i) => i===activeQIdx ? {...item, quoteText: newText} : item);
-                                        return { ...prev, [email.id]: entry?.quotes ? { ...entry, quotes: updated } : { ...entry, quoteText: newText, quotes: updated } };
-                                      });
-                                    }}
-                                    style={{ ...input, height:200, resize:"vertical", fontFamily:"'Courier New',monospace", fontSize:12, lineHeight:1.7, background:"#fff" }}
-                                  />
-
-                                  <div style={{ display:"flex", gap:8, marginTop:10, flexWrap:"wrap" }}>
-                                    {quotesArr.length > 1 ? (
-                                      <>
-                                        <button onClick={()=>{
-                                          const combined = quotesArr.filter(x=>!x.unserviced&&x.quoteText).map(x=>x.quoteText).join("\n\n──────────────────────────────────\n\n");
-                                          sendGmailReply(email, combined);
-                                        }} disabled={isSending||!quotesArr.some(x=>x.quoteText)}
-                                          style={{ padding:"10px 24px", background:isSending?"#94a3b8":C.green, color:"#fff", border:"none", borderRadius:7, fontSize:14, fontWeight:700, cursor:isSending?"not-allowed":"pointer" }}>
-                                          {isSending ? "Sending…" : `Send All ${quotesArr.filter(x=>!x.unserviced).length} Quotes`}
-                                        </button>
-                                        <button onClick={()=>sendGmailReply(email, activeQ?.quoteText||"")} disabled={isSending||!activeQ?.quoteText}
-                                          style={{ padding:"10px 18px", background:isSending?"#94a3b8":C.amber, color:"#fff", border:"none", borderRadius:7, fontSize:13, fontWeight:600, cursor:isSending?"not-allowed":"pointer" }}>
-                                          Send Quote {activeQIdx+1} Only
-                                        </button>
-                                      </>
-                                    ) : (
-                                      <button onClick={()=>sendGmailReply(email, activeQ?.quoteText||"")} disabled={isSending||!activeQ?.quoteText}
-                                        style={{ padding:"10px 24px", background:isSending?"#94a3b8":C.green, color:"#fff", border:"none", borderRadius:7, fontSize:14, fontWeight:700, cursor:isSending?"not-allowed":"pointer" }}>
-                                        {isSending ? "Sending…" : "Send Reply"}
-                                      </button>
-                                    )}
-                                    <button onClick={()=>sendDeclineReply(email)} disabled={isSending}
-                                      style={{ padding:"10px 18px", background:"#fff", color:C.error, border:`1.5px solid #fca5a5`, borderRadius:7, fontSize:13, fontWeight:600, cursor:isSending?"not-allowed":"pointer" }}>
-                                      ✗ Decline
-                                    </button>
-                                    <button onClick={()=>processGmailEmail(email)}
-                                      style={{ padding:"10px 16px", background:"#efe8dc", color:C.muted, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
-                                      Re-process
-                                    </button>
-                                    <button onClick={()=>{ setGmailQuotes(prev => ({ ...prev, [email.id]: { ...prev[email.id], status: "ignored" } })); setGmailExpandedId(null); }}
-                                      style={{ padding:"10px 16px", background:"#fff", color:C.subtle, border:`1.5px solid ${C.border}`, borderRadius:7, fontSize:13, cursor:"pointer" }}>
-                                      Ignore
-                                    </button>
-                                  </div>
-                                  </div>{/* end left col */}
-
-                                  {/* Right: original email body */}
-                                  <div style={{ borderLeft:`2px solid ${C.border}`, paddingLeft:14 }}>
-                                    <div style={{ fontSize:11, fontWeight:700, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:8 }}>Original Email</div>
-                                    <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>
-                                      <span style={{ fontWeight:600 }}>From:</span> {from}
-                                    </div>
-                                    <div style={{ fontSize:11, color:C.muted, marginBottom:10 }}>
-                                      <span style={{ fontWeight:600 }}>Subject:</span> {subject}
-                                    </div>
-                                    <pre style={{ fontSize:11, color:C.text, whiteSpace:"pre-wrap", wordBreak:"break-word", fontFamily:"inherit", lineHeight:1.6, maxHeight:420, overflowY:"auto", background:"#f7f4ee", border:`1px solid ${C.border}`, borderRadius:6, padding:"10px 12px", margin:0 }}>
-                                      {getEmailBody(email.payload) || "(No text body found)"}
-                                    </pre>
-                                  </div>
-                                  </div>
-                                  )}
-                                </>
-                              )}
-
-                              {q?.status === "error" && (
-                                <div style={{ padding:"10px 14px", background:"#fef2f2", borderRadius:8, fontSize:13, color:C.error }}>
-                                  ⚠ {q.error}
-                                  <button onClick={()=>processGmailEmail(email)} style={{ marginLeft:12, padding:"4px 10px", fontSize:12, background:"#fff", border:`1px solid #fca5a5`, borderRadius:5, cursor:"pointer", color:C.error }}>Retry</button>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {/* Other emails — collapsed by default */}
-                    {otherEmails.length > 0 && (
-                      <div style={{ marginTop:16 }}>
-                        <div style={{ fontSize:12, fontWeight:600, color:C.subtle, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:8, display:"flex", alignItems:"center", gap:10 }}>
-                          Other ({otherEmails.length})
-                          {otherEmails.some(e => gmailQuotes[e.id]?.status === "error") && (
-                            <button onClick={async () => {
-                              const errored = otherEmails.filter(e => gmailQuotes[e.id]?.status === "error");
-                              for (const e of errored) { await processGmailEmail(e); await new Promise(r => setTimeout(r, 1500)); }
-                            }} style={{ fontSize:11, padding:"2px 8px", background:"#fef2f2", color:C.error, border:`1px solid #fca5a5`, borderRadius:5, cursor:"pointer", fontWeight:600 }}>
-                              ↺ Retry All Errors
-                            </button>
-                          )}
-                        </div>
-                        {otherEmails.map(email => {
-                          const q       = gmailQuotes[email.id];
-                          const hdrs    = email.payload?.headers || [];
-                          const subject = hdrs.find(h=>h.name==="Subject")?.value || "(no subject)";
-                          const from    = hdrs.find(h=>h.name==="From")?.value || "";
-                          const fromName = from.replace(/<.*>/, "").trim() || from;
-                          const statusLabel = !q ? "Unprocessed" : q.status==="classified" ? (CLASS_LABELS[q.email_type]||q.email_type) : q.status==="not_quote" ? "Not a quote" : q.status==="error" ? "Error" : q.status;
-                          const isError = q?.status === "error";
-                          return (
-                            <div key={email.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px", background: isError ? "#fef2f2" : "#f7f4ee", border:`1px solid ${isError ? "#fca5a5" : C.border}`, borderRadius:8, marginBottom:5 }}>
-                              <div style={{ flex:1, minWidth:0 }}>
-                                <span style={{ fontSize:12, color:C.text, fontWeight:500 }}>{fromName}</span>
-                                <span style={{ fontSize:11, color:C.subtle, marginLeft:8, overflow:"hidden", textOverflow:"ellipsis" }}>{subject}</span>
-                                {isError && q.error && (
-                                  <div style={{ fontSize:11, color:C.error, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>⚠ {q.error}</div>
-                                )}
-                              </div>
-                              <span style={{ fontSize:11, color: isError ? C.error : C.subtle, whiteSpace:"nowrap", fontWeight: isError ? 600 : 400 }}>{statusLabel}</span>
-                              {(!q || isError) && (
-                                <button onClick={()=>processGmailEmail(email)}
-                                  style={{ padding:"3px 10px", fontSize:11, background: isError ? C.error : C.navy, color:"#fff", border:"none", borderRadius:5, cursor:"pointer", flexShrink:0 }}>
-                                  {isError ? "Retry" : "Process"}
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* ── RIGHT: Sent Loads ── */}
-                  <div>
-                    <div style={{ fontSize:15, fontWeight:700, color:C.navy, marginBottom:12, display:"flex", alignItems:"center", gap:8 }}>
-                      📦 Sent Loads
-                      <span style={{ fontSize:13, fontWeight:400, color:C.muted }}>({sentEmails.length})</span>
-                    </div>
-
-                    {sentEmails.length === 0 && (
-                      <div style={{ ...card, textAlign:"center", padding:32, color:C.muted }}>
-                        <div style={{ fontSize:24, marginBottom:8 }}>📤</div>
-                        No quotes sent yet
-                      </div>
-                    )}
-
-                    {sentEmails.map(email => {
-                      const q        = gmailQuotes[email.id];
-                      const hdrs     = email.payload?.headers || [];
-                      const subject  = hdrs.find(h=>h.name==="Subject")?.value || "(no subject)";
-                      const from     = hdrs.find(h=>h.name==="From")?.value || "";
-                      const date     = hdrs.find(h=>h.name==="Date")?.value || "";
-                      const fromName = from.replace(/<.*>/, "").trim() || from;
-                      const isLoadSheet = q?.status === "load_sheet";
-                      const isSentLoad  = q?.status === "sent_load";
-                      // Match to history record by threadId or saved matchedTimestamp
-                      const histMatch = (isLoadSheet || isSentLoad)
-                        ? history.find(h => h.timestamp === q.matchedTimestamp) || history.find(h => h.thread_id === email.threadId)
-                        : history.find(h => h.thread_id === email.threadId);
-                      const outcome   = histMatch?.outcome;
-                      const OUTCOME_INFO = {
-                        waiting:        { label:"⏳ Waiting",         color:"#c2410c", bg:"#fff7ed" },
-                        broker_sending: { label:"📬 Broker Sending",  color:"#7c3aed", bg:"#f5f3ff" },
-                        received:       { label:"✓ Received",         color:C.green,   bg:"#f0fdf4" },
-                        lost:           { label:"✗ Lost",             color:C.error,   bg:"#fef2f2" },
-                        counter:        { label:"🔄 Counter Offer",   color:"#b45309", bg:"#fffbeb" },
-                        sent_load:      { label:"🚛 Sent Load",        color:"#0369a1", bg:"#eff6ff" },
-                      };
-                      const oi = isSentLoad
-                        ? { label:"🚛 Carrier Confirmation", color:"#0369a1", bg:"#eff6ff" }
-                        : isLoadSheet
-                        ? { label:"📄 Load Sheet", color:C.green, bg:"#f0fdf4" }
-                        : outcome ? OUTCOME_INFO[outcome] : { label:"Sent", color:"#6366f1", bg:"#eef2ff" };
-                      return (
-                        <div key={email.id} style={{ ...card, padding:0, overflow:"hidden", marginBottom:8, background:oi.bg, border:`1.5px solid ${oi.color}22` }}>
-                          <div style={{ display:"flex", alignItems:"stretch" }}>
-                            <div style={{ width:4, background:oi.color, flexShrink:0 }}/>
-                            <div style={{ flex:1, padding:"12px 14px" }}>
-                              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8, marginBottom:4 }}>
-                                <span style={{ fontSize:13, fontWeight:600, color:C.navy }}>{fromName}</span>
-                                <span style={{ fontSize:11, fontWeight:700, color:oi.color, whiteSpace:"nowrap" }}>{oi.label}</span>
-                              </div>
-                              {histMatch ? (
-                                <>
-                                  <div style={{ fontSize:12, color:C.text }}>{histMatch.origin} → {histMatch.dest_city}, {histMatch.dest_state}</div>
-                                  <div style={{ display:"flex", gap:12, marginTop:4, alignItems:"center", flexWrap:"wrap" }}>
-                                    <span style={{ fontSize:11, color:C.muted }}>{histMatch.skids} skids</span>
-                                    <span style={{ fontSize:13, fontWeight:700, color:oi.color }}>${r5(histMatch.total)}</span>
-                                    <span style={{ fontSize:11, color:C.subtle }}>{histMatch.date}</span>
-                                    {isLoadSheet && hasPdfAttachment(email.payload) && (!histMatch.dest_city || !histMatch.total || parseFloat(histMatch.total)===0) && (
-                                      <button onClick={()=>reparsePDFEmail(email, histMatch.timestamp)}
-                                        disabled={q?.reparsing}
-                                        style={{ padding:"3px 10px", fontSize:11, fontWeight:700, borderRadius:5, cursor:"pointer", background:C.amber, color:"#fff", border:"none", opacity:q?.reparsing?0.6:1 }}>
-                                        {q?.reparsing ? "⟳ Reading PDF…" : "📄 Re-parse PDF"}
-                                      </button>
-                                    )}
-                                  </div>
-                                  {/* Quick outcome buttons */}
-                                  {outcome !== "received" && outcome !== "lost" && (
-                                    <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap" }}>
-                                      <button onClick={()=>updateQuoteOutcome(histMatch.timestamp,"received")}
-                                        style={{ padding:"4px 10px", fontSize:11, fontWeight:700, borderRadius:5, cursor:"pointer", background:C.green, color:"#fff", border:"none" }}>
-                                        ✓ Received
-                                      </button>
-                                      {outcome !== "broker_sending" && (
-                                        <button onClick={()=>updateQuoteOutcome(histMatch.timestamp,"broker_sending")}
-                                          style={{ padding:"4px 10px", fontSize:11, borderRadius:5, cursor:"pointer", background:"#f5f3ff", color:"#7c3aed", border:`1px solid #ddd6fe` }}>
-                                          📬 Broker Sending
-                                        </button>
-                                      )}
-                                      <button onClick={()=>updateQuoteOutcome(histMatch.timestamp,"lost")}
-                                        style={{ padding:"4px 10px", fontSize:11, borderRadius:5, cursor:"pointer", background:"#fff", color:C.error, border:`1px solid #fca5a5` }}>
-                                        ✗ Lost
-                                      </button>
-                                    </div>
-                                  )}
-                                </>
-                              ) : (
-                                <div style={{ fontSize:11, color:C.subtle, marginTop:2 }}>{subject}</div>
-                              )}
-                              <div style={{ fontSize:11, color:C.subtle, marginTop:4 }}>{new Date(date).toLocaleDateString("en-CA",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                </div>
-              </>
-            );
-          })()}
-        </div>
-
       ) : (
       <>
       {/* ── Step bar ── */}
@@ -3284,16 +2087,21 @@ Be concise and actionable. When asked for recommendations, be specific about whi
         {step === "input" && (
           <div style={{ display:"grid", gridTemplateColumns:"1fr 380px", gap:24, alignItems:"start" }}>
             <div>
-              {/* Sender info */}
+              {/* Broker details */}
               <div style={card}>
-                <div style={{ fontSize:16, fontWeight:700, color:C.navy, marginBottom:16 }}>Your Details</div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:16 }}>
-                  {[["Company Name",company,setCompany],["Your Name",contact,setContact],["Phone / Ext.",phone,setPhone]].map(([l,v,s]) => (
+                <div style={{ fontSize:16, fontWeight:700, color:C.navy, marginBottom:16 }}>Broker Details</div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:16 }}>
+                  {[["Company",brokerCompany,setBrokerCompany],["Contact Name",brokerName,setBrokerName],["Phone",brokerPhone,setBrokerPhone]].map(([l,v,s]) => (
                     <div key={l}>
                       <label style={label}>{l}</label>
                       <input value={v} onChange={e=>s(e.target.value)} placeholder={l} style={input}/>
                     </div>
                   ))}
+                  <div>
+                    <label style={label}>Email *</label>
+                    <input value={brokerEmail} onChange={e=>setBrokerEmail(e.target.value)} placeholder="Email *" type="email"
+                      style={{ ...input, border:`1px solid ${!brokerEmail.trim() ? "#e3c9d1" : C.border}` }}/>
+                  </div>
                 </div>
               </div>
 
@@ -3421,6 +2229,21 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <div style={{marginTop:16}}>
                     <label style={label}>Delivery Address</label>
                     <input value={parsed.delivery_address??""} onChange={e=>handleFieldChange("delivery_address",e.target.value,parsed)} placeholder="Street address of delivery location" style={{...input,width:"100%"}}/>
+                  </div>
+
+                  <div style={{marginTop:16}}>
+                    <label style={label}>Direction</label>
+                    <div style={{ display:"flex", gap:8 }}>
+                      {DIRECTION_OPTS.map(o => (
+                        <button key={o.v} onClick={()=>handleFieldChange("direction",o.v,parsed)} style={{
+                          flex:1, padding:"9px 14px", fontSize:13, fontWeight:(parsed.direction||"outbound")===o.v?700:400,
+                          borderRadius:8, cursor:"pointer",
+                          background:(parsed.direction||"outbound")===o.v?C.navy:"#efe8dc",
+                          color:(parsed.direction||"outbound")===o.v?"#fff":C.text,
+                          border:`1.5px solid ${(parsed.direction||"outbound")===o.v?C.navy:C.border}`,
+                        }}>{o.l}</button>
+                      ))}
+                    </div>
                   </div>
 
                   {/* Line Items / Dimensions */}
@@ -3695,9 +2518,10 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
                 {/* Generate Quote button */}
                 <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                  <button onClick={handleQuote} disabled={geocoding||!base} style={{ padding:"14px 28px", fontSize:15, fontWeight:700, borderRadius:8, cursor:"pointer", background:geocoding||!base?"#d9d0c2":C.navy, color:"#fff", border:"none", width:"100%" }}>
+                  <button onClick={handleQuote} disabled={geocoding||!base||!brokerEmail.trim()} style={{ padding:"14px 28px", fontSize:15, fontWeight:700, borderRadius:8, cursor:"pointer", background:geocoding||!base||!brokerEmail.trim()?"#d9d0c2":C.navy, color:"#fff", border:"none", width:"100%" }}>
                     {geocoding ? "Resolving location…" : "Generate Quote →"}
                   </button>
+                  {!brokerEmail.trim() && <div style={{ fontSize:12, color:C.amber, textAlign:"center" }}>Broker email is required before generating a quote.</div>}
                   <button onClick={()=>{setStep("input");setError(null);}} style={{ padding:"11px 22px", fontSize:14, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500, width:"100%" }}>
                     ← Back
                   </button>
@@ -3785,6 +2609,17 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       }} style={{ marginTop:10, padding:"10px 22px", fontSize:14, fontWeight:700, borderRadius:8, cursor:"pointer", background:copiedIdx===i?C.green:C.amber, color:"#fff", border:"none", transition:"background 0.3s" }}>
                         {copiedIdx===i ? "✓ Copied!" : shipments.length>1 ? `Copy Quote ${i+1}` : "Copy Quote"}
                       </button>
+                      <button onClick={()=>sendQuoteEmail(i)} disabled={emailSendState[i]==="sending"||!brokerEmail.trim()} style={{
+                        marginTop:10, marginLeft:10, padding:"10px 22px", fontSize:14, fontWeight:700, borderRadius:8,
+                        cursor: emailSendState[i]==="sending"||!brokerEmail.trim() ? "not-allowed" : "pointer",
+                        background: emailSendState[i]==="sent" ? C.green : emailSendState[i]==="error" ? C.error : C.navy,
+                        color:"#fff", border:"none", transition:"background 0.3s",
+                      }}>
+                        {emailSendState[i]==="sending" ? "Sending…" : emailSendState[i]==="sent" ? "✓ Sent" : emailSendState[i]==="error" ? "✗ Failed — retry" : "Send Email"}
+                      </button>
+                      <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>
+                        → {routeQuoteEmail(s.dest_state, s.direction)}
+                      </div>
                     </>
                   )}
                 </div>
@@ -3829,9 +2664,9 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                 <div style={{ textAlign:"center", color:C.muted, fontSize:13, marginTop:40 }}>
                   <div style={{ fontSize:32, marginBottom:10 }}>👋</div>
                   <div style={{ fontWeight:600, marginBottom:6 }}>Hi, I'm your dispatch assistant</div>
-                  <div style={{ lineHeight:1.6 }}>Ask me about your loads, get truck recommendations, or have me scan the inbox for new shipments.</div>
+                  <div style={{ lineHeight:1.6 }}>Ask me about your loads, get truck recommendations, or check capacity.</div>
                   <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:16 }}>
-                    {["What loads are on the board?","Which driver fits this week's loads?","Scan inbox for new load sheets","Any capacity issues I should know about?"].map(s=>(
+                    {["What loads are on the board?","Which driver fits this week's loads?","Any capacity issues I should know about?"].map(s=>(
                       <button key={s} onClick={()=>{ setAgentInput(""); callAgent(s); }}
                         style={{ padding:"7px 12px", background:"#f7f4ee", border:"1px solid #e7dfd2", borderRadius:8, fontSize:12, fontWeight:600, color:C.navy, cursor:"pointer", textAlign:"left" }}>
                         {s}
