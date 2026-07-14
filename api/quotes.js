@@ -1,10 +1,9 @@
 import { sql, ensureSchema, findOrCreateBroker } from "./_db.js";
 
 export default async function handler(req, res) {
-  await ensureSchema();
-
   if (req.method === "POST") {
     try {
+      await ensureSchema();
       const q = req.body || {};
       if (!q.timestamp) {
         res.status(400).json({ ok: false, error: "missing_timestamp" });
@@ -49,6 +48,7 @@ export default async function handler(req, res) {
 
   if (req.method === "GET") {
     try {
+      await ensureSchema();
       const { since, brokerId } = req.query || {};
       let rows;
       if (brokerId) {

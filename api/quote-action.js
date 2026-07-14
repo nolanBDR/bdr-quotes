@@ -2,7 +2,6 @@ import { sql, ensureSchema } from "./_db.js";
 import { htmlPage } from "./_email.js";
 
 export default async function handler(req, res) {
-  await ensureSchema();
   const token = req.query?.token;
   res.setHeader("Content-Type", "text/html; charset=utf-8");
 
@@ -12,6 +11,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    await ensureSchema();
     const rows = await sql`SELECT * FROM quote_actions WHERE token = ${token}`;
     const action = rows[0];
     if (!action) {

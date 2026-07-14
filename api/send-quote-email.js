@@ -17,9 +17,9 @@ function mintToken() {
 
 export default async function handler(req, res) {
   if (req.method !== "POST") { res.status(405).json({ ok: false, error: "method_not_allowed" }); return; }
-  await ensureSchema();
 
   try {
+    await ensureSchema();
     const q = req.body || {};
     if (!q.timestamp || !q.broker_email) {
       res.status(400).json({ ok: false, error: "missing_fields" });

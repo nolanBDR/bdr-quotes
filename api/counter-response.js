@@ -3,10 +3,10 @@ import { sendEmail, htmlPage } from "./_email.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") { res.status(405).send("Method not allowed"); return; }
-  await ensureSchema();
   res.setHeader("Content-Type", "text/html; charset=utf-8");
 
   try {
+    await ensureSchema();
     const { token, feedback_text, counter_rate, alternate_dates } = req.body || {};
     if (!token) {
       res.status(400).send(htmlPage("Invalid submission", "<h1>Invalid submission</h1>"));

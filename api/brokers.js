@@ -1,14 +1,13 @@
 import { sql, ensureSchema } from "./_db.js";
 
 export default async function handler(req, res) {
-  await ensureSchema();
-
   if (req.method !== "GET") {
     res.status(405).json({ ok: false, error: "method_not_allowed" });
     return;
   }
 
   try {
+    await ensureSchema();
     const rows = await sql`
       SELECT
         b.id, b.company_name, b.primary_contact_name, b.primary_email, b.phone, b.notes,

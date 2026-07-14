@@ -2,7 +2,6 @@ import { sql, ensureSchema } from "./_db.js";
 import { htmlPage, htmlFormPage } from "./_email.js";
 
 export default async function handler(req, res) {
-  await ensureSchema();
   const token = req.query?.token;
   res.setHeader("Content-Type", "text/html; charset=utf-8");
 
@@ -12,6 +11,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    await ensureSchema();
     const rows = await sql`
       SELECT qa.*, q.broker_name, q.broker_company, q.origin, q.dest_city, q.dest_state, q.total, q.quote_text
       FROM quote_actions qa JOIN quotes q ON q.id = qa.quote_id
