@@ -1146,6 +1146,7 @@ export default function App() {
       setHistory(prev => prev.filter(q => q.timestamp !== timestamp));
       if (viewingQuote?.timestamp === timestamp) setViewingQuote(null);
     } catch(e) {}
+    fetch(`/api/quotes?timestamp=${timestamp}`, { method: "DELETE" }).catch(e => console.error("Could not delete quote from server:", e));
   };
 
   const resolveRate = (p) => {

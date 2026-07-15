@@ -66,5 +66,22 @@ export default async function handler(req, res) {
     return;
   }
 
+  if (req.method === "DELETE") {
+    try {
+      await ensureSchema();
+      const { timestamp } = req.query || {};
+      if (!timestamp) {
+        res.status(400).json({ ok: false, error: "missing_timestamp" });
+        return;
+      }
+      await sql`DELETE FROM quotes WHERE client_timestamp = ${Number(timestamp)}`;
+      res.status(200).json({ ok: true });
+    } catch (e) {
+      console.error("DELETE /api/quotes failed", e);
+      res.status(500).json({ ok: false, error: "delete_failed" });
+    }
+    return;
+  }
+
   res.status(405).json({ ok: false, error: "method_not_allowed" });
 }
