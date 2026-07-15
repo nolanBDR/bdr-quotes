@@ -1,6 +1,23 @@
 import { neon } from "@neondatabase/serverless";
 
-const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL;
+// Vercel's Neon integration can apply a custom "Environment Variable Prefix"
+// (e.g. NEON_DATABASE_URL_POSTGRES_URL instead of plain POSTGRES_URL) when the
+// prefix field wasn't cleared during setup. Rather than depend on one exact
+// name, scan for whichever connection-string variable actually exists,
+// preferring the plain pooled name and falling back to any *_POSTGRES_URL /
+// *_DATABASE_URL variant (skipping the non-pooling/no-ssl/prisma variants).
+function findConnectionString() {
+  if (process.env.POSTGRES_URL) return process.env.POSTGRES_URL;
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  const keys = Object.keys(process.env);
+  const postgresUrlKey = keys.find(k => /(^|_)POSTGRES_URL$/.test(k) && !/_(NON_POOLING|NO_SSL|PRISMA_URL)$/.test(k));
+  if (postgresUrlKey) return process.env[postgresUrlKey];
+  const databaseUrlKey = keys.find(k => /(^|_)DATABASE_URL$/.test(k) && !/_UNPOOLED$/.test(k));
+  if (databaseUrlKey) return process.env[databaseUrlKey];
+  return undefined;
+}
+
+const connectionString = findConnectionString();
 
 // neon() validates the connection string immediately and throws if it's missing —
 // calling it at module load time would crash the whole function on import
