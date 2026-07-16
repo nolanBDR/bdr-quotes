@@ -102,10 +102,21 @@ async function createSchema() {
       counter_reply_text text,
       counter_resolved text,
       email_sent_at timestamptz,
+      zone_tier text,
+      zone_pct numeric,
+      zone_miles numeric,
+      zone_source text,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+  // ALTER ... ADD COLUMN IF NOT EXISTS for the zone fields, since CREATE TABLE IF NOT
+  // EXISTS is a no-op against a database that already had the `quotes` table before
+  // this feature was added.
+  await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS zone_tier text`;
+  await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS zone_pct numeric`;
+  await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS zone_miles numeric`;
+  await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS zone_source text`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_client_timestamp_idx ON quotes (client_timestamp)`;
   await sql`CREATE INDEX IF NOT EXISTS quotes_broker_id_idx ON quotes (broker_id)`;
   await sql`CREATE INDEX IF NOT EXISTS quotes_outcome_idx ON quotes (outcome)`;

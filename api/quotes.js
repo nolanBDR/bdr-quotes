@@ -23,7 +23,8 @@ export default async function handler(req, res) {
           origin, dest_city, dest_state, direction,
           skids, weight_lbs, base_rate, fsc, total,
           rate_city, basis_label, charge_skids, quote_text,
-          pickup_date, delivery_date, consignee, delivery_address, commodity, reference_number
+          pickup_date, delivery_date, consignee, delivery_address, commodity, reference_number,
+          zone_tier, zone_pct, zone_miles, zone_source
         ) VALUES (
           ${q.timestamp}, ${brokerId}, ${q.outcome || "waiting"}, ${q.date || null}, ${q.time || null},
           ${q.broker_name || null}, ${q.broker_company || null}, ${q.broker_email || null}, ${q.broker_phone || null},
@@ -31,7 +32,8 @@ export default async function handler(req, res) {
           ${q.skids ?? null}, ${q.weight_lbs ?? null}, ${q.base_rate ?? null}, ${q.fsc ?? null}, ${q.total ?? null},
           ${q.rate_city || null}, ${q.basis_label || null}, ${q.charge_skids || null}, ${q.quote_text || null},
           ${q.pickup_date || null}, ${q.delivery_date || null}, ${q.consignee || null}, ${q.delivery_address || null},
-          ${q.commodity || null}, ${q.reference_number || null}
+          ${q.commodity || null}, ${q.reference_number || null},
+          ${q.zone_tier || null}, ${q.zone_pct ?? null}, ${q.zone_miles ?? null}, ${q.zone_source || null}
         )
         ON CONFLICT (client_timestamp) DO UPDATE SET
           outcome = EXCLUDED.outcome,

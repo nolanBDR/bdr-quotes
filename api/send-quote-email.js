@@ -41,13 +41,15 @@ export default async function handler(req, res) {
         broker_name, broker_company, broker_email, broker_phone,
         origin, dest_city, dest_state, direction,
         skids, weight_lbs, base_rate, fsc, total,
-        rate_city, basis_label, charge_skids, quote_text
+        rate_city, basis_label, charge_skids, quote_text,
+        zone_tier, zone_pct, zone_miles, zone_source
       ) VALUES (
         ${q.timestamp}, ${brokerId}, 'waiting', ${q.date || null}, ${q.time || null},
         ${q.broker_name || null}, ${q.broker_company || null}, ${q.broker_email}, ${q.broker_phone || null},
         ${q.origin || null}, ${q.dest_city || null}, ${q.dest_state || null}, ${q.direction || "outbound"},
         ${q.skids ?? null}, ${q.weight_lbs ?? null}, ${q.base_rate ?? null}, ${q.fsc ?? null}, ${q.total ?? null},
-        ${q.rate_city || null}, ${q.basis_label || null}, ${q.charge_skids || null}, ${q.quote_text || null}
+        ${q.rate_city || null}, ${q.basis_label || null}, ${q.charge_skids || null}, ${q.quote_text || null},
+        ${q.zone_tier || null}, ${q.zone_pct ?? null}, ${q.zone_miles ?? null}, ${q.zone_source || null}
       )
       ON CONFLICT (client_timestamp) DO UPDATE SET
         broker_email = EXCLUDED.broker_email,
