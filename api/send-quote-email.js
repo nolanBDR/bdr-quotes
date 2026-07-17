@@ -6,6 +6,10 @@ const APP_URL = process.env.PUBLIC_APP_URL || "https://bdr-quotes.vercel.app";
 const TOKEN_TTL_DAYS = 45;
 
 function routeRecipient({ dest_state, direction }) {
+  // Temporary test override — set DEV_EMAIL_OVERRIDE in Vercel's env vars to
+  // reroute every quote email here instead of the real BDR inboxes. Remove
+  // the env var (no code change needed) once ready to go live.
+  if (process.env.DEV_EMAIL_OVERRIDE) return process.env.DEV_EMAIL_OVERRIDE;
   if (dest_state === "TX") return "texas@bdrint.ca";
   if ((direction || "outbound") === "inbound") return "inbound@bdrint.ca";
   return "outbound@bdrint.ca";
