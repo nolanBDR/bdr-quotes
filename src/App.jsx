@@ -56,12 +56,28 @@ const RATES = {
   "QC|Chattanooga|TN":   [500,600,725,850,975,1100,1225,1350,1475,1600,1725,1850,1975,2125,2250,2375,2500,2625,2750,2875,3000,3800],
 };
 
-// Areas that should never be quoted at all — either a named lat/lon+radius
-// exclusion, or a list of 3-digit ZIP prefixes. Add more entries here as
-// BDR identifies areas it doesn't want to service, no code changes needed.
+// Areas that should never be quoted at all. Entry types:
+//  - lat/lon + radiusMi: circular exclusion (e.g. Laredo)
+//  - zip3: list of excluded 3-digit ZIP prefixes
+//  - state + minLat: everything in that state north of a latitude line
+// Add more entries here as BDR identifies areas it doesn't want to service.
 const UNSERVICED_ZONES = [
   { label: "Laredo, TX", lat: 27.506, lon: -99.508, radiusMi: 100 },
+  // No service north of the Mackinac Bridge (MI Upper Peninsula). The lat line
+  // handles geocoded destinations; zip3 catches 498/499 (most of the UP) when
+  // only a ZIP is known. Eastern-UP 497xx ZIPs span the bridge, so those rely
+  // on the ZIP3 centroid latitude check below.
+  { label: "north of the Mackinac Bridge (Upper Peninsula)", state: "MI", minLat: 45.79, zip3: ["498","499"] },
 ];
+
+// Pockets OUTSIDE the serviced states that BDR does service anyway — quoted via
+// their nearest anchor city and zone tier like anywhere else. Verified by
+// distance to the named anchor, using shipment coords or the ZIP3 centroid.
+const SERVICED_STATE_EXCEPTIONS = [
+  { label: "Northern MS (Memphis area)", state: "MS", nearCity: "Memphis", maxMiles: 100 },
+  { label: "AR across from Memphis", state: "AR", nearCity: "Memphis", maxMiles: 50 },
+];
+
 // Beyond this distance (miles) from a shipment's resolved rate zone, block
 // the quote outright instead of just charging the highest zone-tier surcharge.
 const MAX_ZONE_MILES = 300;
@@ -71,11 +87,24 @@ const MAX_ZONE_MILES = 300;
 function isUnserviced(city, state, lat, lon, zip, zoneMiles) {
   const zip3 = (zip || "").slice(0, 3);
   const where = city && state ? `${city}, ${state}` : city || "This destination";
-  if (state && !SERVICED_STATES.has(state.toUpperCase().trim())) {
-    return `${where} is in a state BDR doesn't currently service.`;
+  const st = (state || "").toUpperCase().trim();
+  // Best coordinates available: the shipment's own, else its ZIP3 centroid.
+  const centroid = ZIP3_CENTROIDS[zip3];
+  const effLat = lat || (centroid ? centroid[0] : null);
+  const effLon = lon || (centroid ? centroid[1] : null);
+
+  if (st && !SERVICED_STATES.has(st)) {
+    const exc = SERVICED_STATE_EXCEPTIONS.find(e => e.state === st);
+    const anchor = exc && RATE_CITIES.find(c => c.city === exc.nearCity);
+    const excused = anchor && effLat && effLon && haversine(effLat, effLon, anchor.lat, anchor.lon) <= exc.maxMiles;
+    if (!excused) return `${where} is in a state BDR doesn't currently service.`;
   }
   for (const z of UNSERVICED_ZONES) {
     if (z.zip3?.length && zip3 && z.zip3.includes(zip3)) return `${where} is in an excluded ZIP zone (${z.label}).`;
+    if (z.state && z.minLat != null) {
+      if (st === z.state && effLat && effLat > z.minLat) return `${where} is ${z.label} — BDR doesn't service there.`;
+      continue;
+    }
     if (lat && lon && z.lat != null && z.lon != null) {
       if (haversine(lat, lon, z.lat, z.lon) <= z.radiusMi) return `${where} is within ${z.radiusMi} miles of ${z.label}.`;
     } else if (city && z.label) {
