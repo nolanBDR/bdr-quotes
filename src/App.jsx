@@ -1,6 +1,7 @@
 ﻿import { useState, useCallback, useRef, useEffect } from "react";
 import { CUSTOMER_PROFILES } from "./customerProfiles.js";
 import { ZIP3_CENTROIDS } from "./zip3Zones.js";
+import bdrLogo from "./assets/bdr-logo.png";
 
 const ANTHROPIC_KEY   = (() => { try { return import.meta.env.VITE_ANTHROPIC_KEY  || ""; } catch(e) { return ""; } })();
 
@@ -938,6 +939,7 @@ export default function App() {
   const [brokerPhone, setBrokerPhone]     = useState("");
   const [brokerEmail, setBrokerEmail]     = useState("");
   const [emailSendState, setEmailSendState] = useState({}); // {[shipmentIdx]: "sending"|"sent"|"error"}
+  const [emailRecipient, setEmailRecipient] = useState({}); // {[shipmentIdx]: actual "to" address the backend used}
   const debounce                    = useRef(null);
   const [tab, setTab]               = useState("quote");   // quote | history
 
@@ -1517,6 +1519,7 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "send_failed");
+      if (data.recipient) setEmailRecipient(prev => ({ ...prev, [idx]: data.recipient }));
       setEmailSendState(prev => ({ ...prev, [idx]: "sent" }));
     } catch (e) {
       console.error("Could not send quote email:", e);
@@ -1699,7 +1702,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
         {/* Main nav bar */}
         <div style={{ maxWidth:1400, margin:"0 auto", padding:"0 32px", display:"flex", alignItems:"center", justifyContent:"space-between", height:72 }}>
           {/* Logo */}
-          <img src="https://bdrint.ca/wp-content/themes/bdr-international/images/logos/bdr-international-logo.png" alt="BDR International Ltd." style={{ height:56, objectFit:"contain" }}/>
+          <img src={bdrLogo} alt="BDR International Ltd." style={{ height:56, objectFit:"contain" }}/>
           {/* Nav links */}
           <nav style={{ display:"flex", alignItems:"center", gap:4 }}>
             {[["quote","Quote"],["history","History"]].map(([t,l]) => (
@@ -2771,7 +2774,9 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         {emailSendState[i]==="sending" ? "Sending…" : emailSendState[i]==="sent" ? "✓ Sent" : emailSendState[i]==="error" ? "✗ Failed — retry" : "Send Email"}
                       </button>
                       <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>
-                        → {routeQuoteEmail(s.dest_state, s.direction)}
+                        {emailRecipient[i]
+                          ? `→ ${emailRecipient[i]}`
+                          : `will route to ${routeQuoteEmail(s.dest_state, s.direction)}`}
                       </div>
                     </>
                   )}
