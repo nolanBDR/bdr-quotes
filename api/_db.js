@@ -145,6 +145,27 @@ async function createSchema() {
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+
+  // ── Rate lanes — replaces the old hardcoded RATES table in App.jsx. Same
+  // table as bdr-quotes-customer/api/_db.js (shared database) — see that
+  // file's comment for why only the 0%-tier base_rates array is stored.
+  await sql`
+    CREATE TABLE IF NOT EXISTS rate_lanes (
+      id serial PRIMARY KEY,
+      direction text NOT NULL CHECK (direction IN ('outbound','inbound','local')),
+      origin_region text NOT NULL CHECK (origin_region IN ('ON','QC')),
+      anchor_city text,
+      anchor_state text,
+      anchor_lat numeric,
+      anchor_lon numeric,
+      base_rates jsonb NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS rate_lanes_key
+      ON rate_lanes (direction, origin_region, coalesce(anchor_city,''), coalesce(anchor_state,''))
+  `;
 }
 
 export function normalizeCompany(s) {

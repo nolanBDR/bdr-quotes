@@ -16,58 +16,11 @@ if (!window.storage) {
 }
 
 // ── Rate Sheet ────────────────────────────────────────────────
-const RATES = {
-  "ON|Houston|TX":       [375,475,575,675,800,950,1080,1215,1350,1485,1620,1755,1890,2025,2160,2295,2430,2565,2700,2835,2970,3100],
-  "ON|Dallas|TX":        [375,475,575,675,800,925,1050,1150,1300,1400,1525,1650,1775,1900,2000,2125,2250,2375,2500,2600,2725,3600],
-  "ON|San Antonio|TX":   [400,500,600,700,850,1000,1125,1275,1425,1575,1700,1875,2000,2150,2300,2450,2575,2725,2875,3025,3175,3800],
-  "ON|Detroit|MI":       [350,375,425,450,500,550,600,625,650,675,700,725,750,775,800,825,850,875,900,925,950,1100],
-  "ON|Lansing|MI":       [375,400,450,500,550,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200,1250,1300,1350,1400],
-  "ON|Grand Rapids|MI":  [400,425,475,525,575,625,700,775,850,925,975,1050,1125,1200,1275,1350,1400,1450,1500,1550,1600,1650],
-  "ON|Toledo|OH":        [375,400,450,500,550,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200,1250,1300,1350,1400],
-  "ON|Cleveland|OH":     [400,425,450,500,550,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200,1250,1300,1350,1600],
-  "ON|Cincinnati|OH":    [400,450,500,525,575,625,700,775,850,925,1000,1075,1125,1200,1275,1350,1400,1450,1500,1550,1600,1800],
-  "ON|Columbus|OH":      [400,450,500,525,575,625,700,775,850,925,1000,1075,1125,1200,1275,1350,1400,1450,1500,1550,1600,1800],
-  "ON|Louisville|KY":    [375,425,475,525,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200,1250,1300,1350,1400,2000],
-  "ON|Lexington|KY":     [375,425,475,525,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200,1250,1300,1350,1400,2000],
-  "ON|Chicago|IL":       [375,400,450,500,550,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200,1250,1300,1375,1800],
-  "ON|Indianapolis|IN":  [375,425,475,525,575,625,675,725,775,825,875,925,975,1025,1075,1125,1175,1225,1275,1325,1375,1800],
-  "ON|Fort Wayne|IN":    [375,425,475,525,575,625,675,725,775,825,875,925,975,1025,1075,1125,1175,1225,1275,1325,1375,1800],
-  "ON|South Bend|IN":    [375,425,475,525,575,625,675,725,775,825,875,925,975,1025,1075,1125,1175,1225,1275,1325,1375,1800],
-  "ON|Evansville|IN":    [375,425,475,525,600,650,700,750,800,850,900,950,1000,1050,1100,1150,1200,1250,1300,1350,1400,2000],
-  "ON|St Louis|MO":      [375,425,475,525,600,675,750,825,900,975,1050,1125,1200,1275,1350,1425,1500,1575,1650,1725,1800,2400],
-  "ON|Kansas City|KS":   [400,450,500,550,625,700,775,850,925,1000,1075,1150,1225,1300,1375,1450,1525,1600,1675,1750,1825,3000],
-  "ON|Joplin|MO":        [400,450,525,600,675,750,825,900,975,1050,1125,1200,1275,1375,1450,1525,1600,1675,1750,1825,1900,3000],
-  "ON|Nashville|TN":     [375,425,475,525,575,650,725,800,875,950,1025,1100,1175,1250,1325,1400,1475,1550,1625,1700,1775,2400],
-  "ON|Memphis|TN":       [400,450,525,600,675,750,825,900,975,1050,1125,1200,1275,1375,1450,1525,1600,1675,1750,1825,1900,3000],
-  "ON|Knoxville|TN":     [400,450,525,600,675,750,825,900,975,1050,1125,1200,1275,1375,1450,1525,1600,1675,1750,1825,1900,3000],
-  "ON|Chattanooga|TN":   [400,450,525,600,675,750,825,900,975,1050,1125,1200,1275,1375,1450,1525,1600,1675,1750,1825,1900,3000],
-  "ON|Traverse City|MI": [400,450,525,600,675,750,825,900,975,1050,1125,1200,1275,1375,1450,1525,1600,1675,1750,1825,1900,3000],
-  "QC|Houston|TX":       [475,625,775,925,1100,1300,1600,1800,1975,2175,2350,2550,2725,2900,3100,3300,3475,3650,3825,4050,4200,6000],
-  "QC|Dallas|TX":        [475,625,775,925,1100,1275,1450,1625,1800,1950,2125,2300,2475,2650,2800,2975,3150,3325,3500,3650,3825,5800],
-  "QC|San Antonio|TX":   [500,650,800,950,1150,1350,1525,1725,1925,2125,2300,2525,2700,2900,3100,3300,3475,3675,3875,4075,4275,6800],
-  "QC|Detroit|MI":       [450,525,625,700,800,900,1000,1075,1150,1225,1300,1375,1450,1525,1600,1675,1750,1825,1900,1975,2050,2500],
-  "QC|Lansing|MI":       [475,550,650,750,850,950,1050,1150,1250,1350,1450,1550,1650,1750,1850,1950,2050,2150,2250,2350,2450,2800],
-  "QC|Grand Rapids|MI":  [500,575,675,775,875,975,1100,1225,1350,1475,1575,1700,1825,1950,2075,2200,2300,2400,2500,2600,2700,3200],
-  "QC|Toledo|OH":        [475,550,650,750,850,950,1050,1150,1250,1350,1450,1550,1650,1750,1850,1950,2050,2150,2250,2350,2450,2800],
-  "QC|Cleveland|OH":     [500,575,650,750,850,950,1075,1175,1300,1400,1500,1600,1700,1800,1900,2000,2150,2250,2350,2450,2550,3400],
-  "QC|Cincinnati|OH":    [500,600,700,775,875,975,1100,1225,1350,1475,1600,1725,1825,1950,2075,2200,2300,2400,2500,2600,2700,3400],
-  "QC|Columbus|OH":      [500,600,700,775,875,975,1100,1225,1350,1475,1600,1725,1825,1950,2075,2200,2300,2400,2500,2600,2700,3400],
-  "QC|Louisville|KY":    [475,575,675,775,900,1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,2000,2100,2200,2300,2400,2500,3400],
-  "QC|Lexington|KY":     [475,575,675,775,900,1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,2000,2100,2200,2300,2400,2500,3400],
-  "QC|Chicago|IL":       [475,575,675,775,900,1000,1050,1150,1250,1350,1450,1550,1650,1750,1850,1950,2050,2150,2250,2350,2450,3200],
-  "QC|Indianapolis|IN":  [475,575,675,775,900,1000,1050,1150,1250,1350,1450,1550,1650,1750,1850,1950,2050,2150,2250,2350,2450,3200],
-  "QC|Fort Wayne|IN":    [475,575,675,775,900,1000,1050,1150,1250,1350,1450,1550,1650,1750,1850,1950,2050,2150,2250,2350,2450,3200],
-  "QC|South Bend|IN":    [475,575,675,775,900,1000,1050,1150,1250,1350,1450,1550,1650,1750,1850,1950,2050,2150,2250,2350,2450,3200],
-  "QC|Evansville|IN":    [475,575,675,775,900,1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,2000,2100,2200,2300,2400,2500,3400],
-  "QC|St Louis|MO":      [475,575,675,775,900,1025,1150,1275,1400,1525,1650,1775,1900,2025,2150,2275,2400,2525,2650,2775,2900,3600],
-  "QC|Kansas City|KS":   [500,600,700,800,925,1050,1175,1300,1425,1550,1675,1800,1925,2050,2175,2300,2425,2550,2675,2800,2925,4100],
-  "QC|Joplin|MO":        [500,600,725,850,975,1100,1225,1350,1475,1600,1725,1850,1975,2125,2250,2375,2500,2625,2750,2875,3000,3800],
-  "QC|Nashville|TN":     [475,575,675,775,900,1025,1150,1275,1400,1525,1650,1775,1900,2025,2150,2275,2400,2525,2650,2775,2900,3600],
-  "QC|Memphis|TN":       [500,600,725,850,975,1100,1225,1350,1475,1600,1725,1850,1975,2125,2250,2375,2500,2625,2750,2875,3000,3800],
-  "QC|Knoxville|TN":     [500,600,725,850,975,1100,1225,1350,1475,1600,1725,1850,1975,2125,2250,2375,2500,2625,2750,2875,3000,3800],
-  "QC|Chattanooga|TN":   [500,600,725,850,975,1100,1225,1350,1475,1600,1725,1850,1975,2125,2250,2375,2500,2625,2750,2875,3000,3800],
-  "QC|Traverse City|MI": [500,600,725,850,975,1100,1225,1350,1475,1600,1725,1850,1975,2125,2250,2375,2500,2625,2750,2875,3000,3800],
-};
+// Rates live in the shared `rate_lanes` DB table (same DB as the customer
+// portal) now, not here — fetched once via GET /api/rates and passed into
+// resolveZone/getRate/isUnserviced. Update via bdr-quotes-customer's
+// scripts/import-rates.mjs, never by editing this file. See deriveAnchorCities/
+// derivedServicedStates below for the client-side derivation from lanes.
 
 // Areas that should never be quoted at all. Entry types:
 //  - lat/lon + radiusMi: circular exclusion (e.g. Laredo)
@@ -97,7 +50,9 @@ const MAX_ZONE_MILES = 300;
 
 // Returns a complete, human-readable reason (not just a label) when a
 // destination shouldn't be quoted at all — displayed as-is in the UI.
-function isUnserviced(city, state, lat, lon, zip, zoneMiles) {
+// `cities`/`servicedStates` come from deriveAnchorCities/derivedServicedStates
+// over whatever lanes GET /api/rates returned.
+function isUnserviced(cities, servicedStates, city, state, lat, lon, zip, zoneMiles) {
   const zip3 = (zip || "").slice(0, 3);
   const where = city && state ? `${city}, ${state}` : city || "This destination";
   const st = (state || "").toUpperCase().trim();
@@ -106,9 +61,9 @@ function isUnserviced(city, state, lat, lon, zip, zoneMiles) {
   const effLat = lat || (centroid ? centroid[0] : null);
   const effLon = lon || (centroid ? centroid[1] : null);
 
-  if (st && !SERVICED_STATES.has(st)) {
+  if (st && !servicedStates.has(st)) {
     const exc = SERVICED_STATE_EXCEPTIONS.find(e => e.state === st);
-    const anchor = exc && RATE_CITIES.find(c => c.city === exc.nearCity);
+    const anchor = exc && cities.find(c => c.city === exc.nearCity);
     const excused = anchor && effLat && effLon && haversine(effLat, effLon, anchor.lat, anchor.lon) <= exc.maxMiles;
     if (!excused) return `${where} is in a state BDR doesn't currently service.`;
   }
@@ -129,38 +84,25 @@ function isUnserviced(city, state, lat, lon, zip, zoneMiles) {
   return null;
 }
 
-const RATE_CITIES = [
-  { city:"Houston",     state:"TX", lat:29.760, lon:-95.370 },
-  { city:"Dallas",      state:"TX", lat:32.779, lon:-96.800 },
-  { city:"San Antonio", state:"TX", lat:29.424, lon:-98.494 },
-  { city:"Detroit",     state:"MI", lat:42.331, lon:-83.046 },
-  { city:"Lansing",     state:"MI", lat:42.732, lon:-84.555 },
-  { city:"Grand Rapids",state:"MI", lat:42.963, lon:-85.668 },
-  { city:"Traverse City",state:"MI", lat:44.763, lon:-85.620 },
-  { city:"Toledo",      state:"OH", lat:41.663, lon:-83.555 },
-  { city:"Cleveland",   state:"OH", lat:41.499, lon:-81.695 },
-  { city:"Cincinnati",  state:"OH", lat:39.103, lon:-84.512 },
-  { city:"Columbus",    state:"OH", lat:39.961, lon:-82.999 },
-  { city:"Louisville",  state:"KY", lat:38.252, lon:-85.759 },
-  { city:"Lexington",   state:"KY", lat:38.041, lon:-84.504 },
-  { city:"Chicago",     state:"IL", lat:41.878, lon:-87.630 },
-  { city:"Indianapolis",state:"IN", lat:39.768, lon:-86.158 },
-  { city:"Fort Wayne",  state:"IN", lat:41.079, lon:-85.139 },
-  { city:"South Bend",  state:"IN", lat:41.676, lon:-86.252 },
-  { city:"Evansville",  state:"IN", lat:37.972, lon:-87.571 },
-  { city:"St Louis",    state:"MO", lat:38.627, lon:-90.199 },
-  { city:"Kansas City", state:"KS", lat:39.099, lon:-94.578 },
-  { city:"Joplin",      state:"MO", lat:37.084, lon:-94.513 },
-  { city:"Nashville",   state:"TN", lat:36.162, lon:-86.781 },
-  { city:"Memphis",     state:"TN", lat:35.149, lon:-90.048 },
-  { city:"Knoxville",   state:"TN", lat:35.961, lon:-83.921 },
-  { city:"Chattanooga", state:"TN", lat:35.046, lon:-85.310 },
-];
+// Derives the flat "which US city is nearest" anchor list resolveZone needs
+// from whatever lanes came back from GET /api/rates — de-duplicated since the
+// same city appears once per direction/origin combination. Local lanes have
+// no anchor city and are excluded.
+function deriveAnchorCities(lanes) {
+  const seen = new Map();
+  for (const l of lanes) {
+    if (l.direction === "local" || !l.anchor_city) continue;
+    const key = `${l.anchor_city}|${l.anchor_state}`;
+    if (!seen.has(key)) seen.set(key, { city: l.anchor_city, state: l.anchor_state, lat: +l.anchor_lat, lon: +l.anchor_lon });
+  }
+  return [...seen.values()];
+}
 
-// Only these states have rate lanes today — any destination outside them is
-// unserviced regardless of distance to the nearest anchor. Derived from
-// RATE_CITIES so adding a city to a new state automatically opens it up.
-const SERVICED_STATES = new Set(RATE_CITIES.map(c => c.state));
+// Only states with at least one lane are serviceable — anything else is
+// unserviced regardless of distance to the nearest anchor.
+function derivedServicedStates(lanes) {
+  return new Set(lanes.filter(l => l.direction !== "local" && l.anchor_state).map(l => l.anchor_state));
+}
 
 const DEFAULT_DRIVERS = [
   {id:"drv_new_1779127321319_mbb9",name:"Abraham Rempel Fehr",truckNumber:"183",departureDays:[1,2,4,5],driverType:"owner_op",partTime:false,worksDock:false,outOfService:false,lanes:["Detroit, MI"],category:"crossborder"},
@@ -296,38 +238,42 @@ function haversine(lat1, lon1, lat2, lon2) {
 // through the normal nearest-anchor + zone-tier logic instead, so this is empty.
 const RATE_CITY_OVERRIDES = {};
 
-function findNearestRateCity(lat, lon, destCity) {
+function findNearestRateCity(cities, lat, lon, destCity) {
   // Check for explicit override first
   if (destCity) {
     const key = destCity.toUpperCase().trim();
     const overrideCity = RATE_CITY_OVERRIDES[key];
     if (overrideCity) {
-      const match = RATE_CITIES.find(c => c.city === overrideCity);
+      const match = cities.find(c => c.city === overrideCity);
       if (match) return { ...match, distance: Math.round(haversine(lat, lon, match.lat, match.lon)), overridden: true };
     }
   }
   let nearest = null, nearestDist = Infinity;
-  for (const c of RATE_CITIES) {
+  for (const c of cities) {
     const d = haversine(lat, lon, c.lat, c.lon);
     if (d < nearestDist) { nearestDist = d; nearest = c; }
   }
   return { ...nearest, distance: Math.round(nearestDist) };
 }
 
-// Flat percentage surcharge tiers based on distance (miles) from a shipment's
-// resolved rate-zone anchor. Core = no surcharge; each ring beyond that adds a
-// flat percentage, capped at the last tier beyond its breakpoint. Tunable —
-// a starting point to confirm against real quotes, not locked-in numbers.
-const ZONE_TIERS = [
-  { maxMiles: 25,  pct: 0,    label: "Core zone" },
-  { maxMiles: 75,  pct: 0.05, label: "+5%" },
-  { maxMiles: 150, pct: 0.10, label: "+10%" },
-  { maxMiles: 250, pct: 0.15, label: "+15%" },
-];
-function zoneTier(miles) {
-  if (miles == null) return { pct: 0, label: null };
-  for (const t of ZONE_TIERS) if (miles <= t.maxMiles) return t;
-  return ZONE_TIERS[ZONE_TIERS.length - 1];
+// The carrier's rate sheet prices every lane at 6 possible rows (base, then
+// 15/18/20/30/40% surcharges) — but the row actually charged is determined by
+// the shipment's own effective skid count, not distance and not a separate
+// fuel surcharge: 1-4 skids and FTL bill at the base (0%) row, 5-14 skids at
+// the 18% row, 15-21 skids at the 15% row. Verified against the real sheet —
+// every percentage row is exactly round(base * (1 + pct)), so lanes only
+// store the base row (rate_lanes.base_rates) and this derives the rest.
+// chargeIdx is 0-based (0=1 skid, 20=21 skids, 21=FTL).
+function skidTierPct(chargeIdx) {
+  if (chargeIdx === 21) return 0;       // FTL
+  if (chargeIdx <= 3) return 0;         // 1-4 skids
+  if (chargeIdx <= 13) return 0.18;     // 5-14 skids
+  return 0.15;                          // 15-21 skids
+}
+function skidTierLabelFor(pct) {
+  if (pct === 0.18) return "18% (5–14 skids)";
+  if (pct === 0.15) return "15% (15–21 skids)";
+  return null;
 }
 
 // Validates a US ZIP (5-digit, optionally +4) and returns its 3-digit prefix, or null.
@@ -336,13 +282,14 @@ function toZip3(zip) {
   return /^\d{5}(-\d{4})?$/.test(s) ? s.slice(0, 3) : null;
 }
 
-// Resolves which rate-zone anchor + distance applies to a destination, in
-// priority order: (1) RATE_CITY_OVERRIDES by city name — wins regardless of
-// ZIP, same as findNearestRateCity; (2) a ZIP3 centroid lookup, deterministic
-// and independent of live geocoding; (3) the existing geographic
-// nearest-anchor fallback, with `zoneMiles: null` so NO zone tier is applied —
-// any shipment without a usable ZIP behaves exactly as it always has.
-function resolveZone(destZip, lat, lon, destCity) {
+// Resolves which rate-zone anchor + distance applies to a destination
+// (`cities` — see deriveAnchorCities), in priority order: (1) RATE_CITY_OVERRIDES
+// by city name — wins regardless of ZIP, same as findNearestRateCity; (2) a
+// ZIP3 centroid lookup, deterministic and independent of live geocoding; (3)
+// the geographic nearest-anchor fallback. `zoneMiles` is purely informational
+// now (the "too far to service" cutoff in isUnserviced) — it no longer drives
+// any surcharge; see skidTierPct above for what actually does.
+function resolveZone(cities, destZip, lat, lon, destCity) {
   const zip3 = toZip3(destZip);
   const centroid = zip3 ? ZIP3_CENTROIDS[zip3] : null;
   // Prefer the shipment's own geocoded lat/lon; fall back to the ZIP3 centroid
@@ -354,7 +301,7 @@ function resolveZone(destZip, lat, lon, destCity) {
     const key = destCity.toUpperCase().trim();
     const overrideCity = RATE_CITY_OVERRIDES[key];
     if (overrideCity) {
-      const match = RATE_CITIES.find(c => c.city === overrideCity);
+      const match = cities.find(c => c.city === overrideCity);
       if (match) {
         const miles = (distLat && distLon) ? Math.round(haversine(distLat, distLon, match.lat, match.lon)) : null;
         return { ...match, distance: miles, overridden: true, zoneMiles: miles, zoneSource: "override" };
@@ -365,7 +312,7 @@ function resolveZone(destZip, lat, lon, destCity) {
   if (centroid) {
     const [zLat, zLon] = centroid;
     let nearest = null, nearestDist = Infinity;
-    for (const c of RATE_CITIES) {
+    for (const c of cities) {
       const d = haversine(zLat, zLon, c.lat, c.lon);
       if (d < nearestDist) { nearestDist = d; nearest = c; }
     }
@@ -373,7 +320,7 @@ function resolveZone(destZip, lat, lon, destCity) {
     return { ...nearest, distance: miles, zoneMiles: miles, zoneSource: "zip3" };
   }
 
-  const geo = findNearestRateCity(lat, lon, destCity);
+  const geo = findNearestRateCity(cities, lat, lon, destCity);
   return { ...geo, zoneMiles: null, zoneSource: "geo" };
 }
 
@@ -460,17 +407,28 @@ function calcDimBasis(lineItems) {
   return { lines: calculated, totalFt: +totalFt.toFixed(2), effSkids };
 }
 
-function getRate(origin, rateCity, skids, weightLbs, lineItems, footage) {
+// Finds a lane in `lanes` (as returned by GET /api/rates) for the given
+// direction + origin + anchor city — or, for direction:"local", the single
+// per-origin local lane (no anchor city involved at all).
+function findLane(lanes, direction, origin, rateCity) {
   const orig = (origin||"").toUpperCase().includes("QC") || (origin||"").toUpperCase().includes("QUEBEC") || (origin||"").toUpperCase().includes("MONTREAL") ? "QC" : "ON";
-  const key = `${orig}|${rateCity.city}|${rateCity.state}`;
-  const table = RATES[key];
-  if (!table) return null;
+  if (direction === "local") {
+    return lanes.find(l => l.direction === "local" && l.origin_region === orig);
+  }
+  if (!rateCity) return null;
+  return lanes.find(l => l.direction === direction && l.origin_region === orig && l.anchor_city === rateCity.city && l.anchor_state === rateCity.state);
+}
 
-  const { pct: zonePct, label: zoneTierLabel } = zoneTier(rateCity.zoneMiles);
+function getRate(lanes, origin, direction, rateCity, skids, weightLbs, lineItems, footage) {
+  const lane = findLane(lanes, direction || "outbound", origin, rateCity);
+  if (!lane) return null;
+  const table = lane.base_rates;
+  const orig = lane.origin_region;
 
   if (skids === "FTL") {
     const rawBase = table[21];
-    return { base: r5(rawBase * (1 + zonePct)), rawBase, zonePct, zoneTierLabel, table, key, orig, chargeIdx: 21, skidIdx: 21, weightIdx: 21, dimIdx: 21, footageIdx: 21, basisLabel: "FTL", dimBasis: null };
+    const zonePct = skidTierPct(21);
+    return { base: Math.round(rawBase * (1 + zonePct)), rawBase, zonePct, zoneTierLabel: skidTierLabelFor(zonePct), table, orig, chargeIdx: 21, skidIdx: 21, weightIdx: 21, dimIdx: 21, footageIdx: 21, basisLabel: "FTL", dimBasis: null };
   }
 
   const footageVal    = parseFloat(footage) || 0;
@@ -523,7 +481,8 @@ function getRate(origin, rateCity, skids, weightLbs, lineItems, footage) {
   }
 
   const rawBase = table[chargeIdx];
-  return { base: r5(rawBase * (1 + zonePct)), rawBase, zonePct, zoneTierLabel, table, key, orig, chargeIdx, skidIdx, weightIdx, dimIdx, footageIdx, basisLabel, dimBasis, footageOnly, useFootageBasis };
+  const zonePct = skidTierPct(chargeIdx);
+  return { base: Math.round(rawBase * (1 + zonePct)), rawBase, zonePct, zoneTierLabel: skidTierLabelFor(zonePct), table, orig, chargeIdx, skidIdx, weightIdx, dimIdx, footageIdx, basisLabel, dimBasis, footageOnly, useFootageBasis };
 }
 
 // ── API queue — max 2 concurrent Anthropic calls, 300ms between slots ─────
@@ -863,7 +822,7 @@ function accsFromParsed(a) {
   if (!a) return {};
   return { da: !!a.driver_assist, lg: !!a.liftgate, nc: !!a.no_crossdock, fl: !!a.floorload, st: !!a.straight_truck };
 }
-const DIRECTION_OPTS = [{v:"outbound",l:"Outbound (ON/QC → US)"},{v:"inbound",l:"Inbound (US → ON/QC)"}];
+const DIRECTION_OPTS = [{v:"outbound",l:"Outbound (ON/QC → US)"},{v:"inbound",l:"Inbound (US → ON/QC)"},{v:"local",l:"Local (within ON/QC)"}];
 
 // BDR's own signature — quotes are signed with this regardless of who fills the form.
 const BDR_SIGNATURE = { name: "Nolan Giesbrecht", company: "BDR International Ltd", phone: "519-469-9361 ext 113" };
@@ -946,6 +905,8 @@ export default function App() {
   const [rateCity, setRateCity]     = useState(null);
   const [rateResult, setRateResult] = useState(null);
   const [geocoding, setGeocoding]   = useState(false);
+  const [lanes, setLanes]           = useState(null); // null = still loading
+  const [ratesError, setRatesError] = useState(null);
   const [shipments, setShipments]   = useState([]);      // all parsed shipments
   const [activeIdx, setActiveIdx]   = useState(0);       // currently viewed shipment
   const [quoteTexts, setQuoteTexts]       = useState([]);   // generated quote per shipment
@@ -1159,6 +1120,21 @@ export default function App() {
     })();
   }, [historyView, brokersLoaded]);
 
+  // Rate lanes load once on mount — they don't change mid-session, so there's
+  // no reason to refetch per keystroke like geocoding does.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/rates");
+        const data = await res.json();
+        if (data.ok) setLanes(data.lanes);
+        else setRatesError(data.error || "Could not load rates.");
+      } catch(e) { setRatesError(e.message || "Could not load rates."); }
+    })();
+  }, []);
+  const cities = lanes ? deriveAnchorCities(lanes) : [];
+  const servicedStates = lanes ? derivedServicedStates(lanes) : new Set();
+
   const QUOTE_LIMIT = 500;
 
   const updateQuoteOutcome = async (timestamp, outcome) => {
@@ -1282,10 +1258,26 @@ export default function App() {
     fetch(`/api/quotes?timestamp=${timestamp}`, { method: "DELETE" }).catch(e => console.error("Could not delete quote from server:", e));
   };
 
+  const computeRate = (p) => {
+    if (!lanes) return { rc: null, r: null };
+    const dir = p?.direction || "outbound";
+    if (dir === "local") {
+      return { rc: null, r: getRate(lanes, p.origin, "local", null, p.skids, p.weight_lbs, p.line_items, p.footage) };
+    }
+    const isInbound = dir === "inbound";
+    const rcCity = isInbound ? p?.pickup_location : p?.dest_city;
+    const rcLat  = isInbound ? p?.pickup_lat : p?.dest_lat;
+    const rcLon  = isInbound ? p?.pickup_lon : p?.dest_lon;
+    const rcZip  = isInbound ? null : p?.dest_zip;
+    const origin = isInbound ? (p?.dest_state === "QC" ? "Quebec" : "Ontario") : p.origin;
+    if (!rcZip && (!rcLat || !rcLon)) return { rc: null, r: null };
+    const rc = resolveZone(cities, rcZip, rcLat, rcLon, rcCity);
+    const r  = getRate(lanes, origin, dir, rc, p.skids, p.weight_lbs, p.line_items, p.footage);
+    return { rc, r };
+  };
+
   const resolveRate = (p) => {
-    if (!p?.dest_zip && (!p?.dest_lat || !p?.dest_lon)) return null;
-    const rc = resolveZone(p.dest_zip, p.dest_lat, p.dest_lon, p.dest_city);
-    const r  = getRate(p.origin, rc, p.skids, p.weight_lbs, p.line_items, p.footage);
+    const { rc, r } = computeRate(p);
     setRateCity(rc); setRateResult(r);
     return r;
   };
@@ -1361,17 +1353,19 @@ export default function App() {
   const handleFieldChange = (key, value, current) => {
     const updated = { ...current, [key]: value };
     setParsed(updated);
-    if (key === "skids" || key === "origin") {
-      setRateResult(getRate(updated.origin, rateCity, updated.skids, updated.weight_lbs, updated.line_items, updated.footage));
+    const dir = updated.direction || "outbound";
+    if (key === "skids" || key === "origin" || key === "direction" || key === "pickup_location") {
+      const { rc, r } = computeRate(updated);
+      setRateCity(rc); setRateResult(r);
       return;
     }
     if (key === "dest_zip") {
       // Synchronous local table lookup — recompute immediately, no geocode debounce needed.
-      const rc = resolveZone(updated.dest_zip, updated.dest_lat, updated.dest_lon, updated.dest_city);
-      setRateCity(rc);
-      setRateResult(getRate(updated.origin, rc, updated.skids, updated.weight_lbs, updated.line_items, updated.footage));
+      const { rc, r } = computeRate(updated);
+      setRateCity(rc); setRateResult(r);
       return;
     }
+    if (dir === "inbound") return; // destination is just the home ON/QC province for inbound — no geocode/anchor lookup on that side.
     if ((key === "dest_city" || key === "dest_state") && (updated.dest_city||"").length > 2) {
       clearTimeout(debounce.current);
       setGeocoding(true);
@@ -1381,9 +1375,9 @@ export default function App() {
           if (coords?.lat && coords?.lon) {
             const withCoords = { ...updated, dest_lat:coords.lat, dest_lon:coords.lon };
             setParsed(withCoords);
-            const rc = resolveZone(updated.dest_zip, coords.lat, coords.lon, updated.dest_city);
+            const rc = resolveZone(cities, updated.dest_zip, coords.lat, coords.lon, updated.dest_city);
             setRateCity(rc);
-            setRateResult(getRate(updated.origin, rc, updated.skids, updated.weight_lbs, updated.line_items, updated.footage));
+            setRateResult(getRate(lanes, updated.origin, dir, rc, updated.skids, updated.weight_lbs, updated.line_items, updated.footage));
           }
         } catch(e) {} finally { setGeocoding(false); }
       }, 800);
@@ -1440,6 +1434,8 @@ export default function App() {
       // edits a field in the Review step — handleFieldChange only updates `parsed`/
       // `rateCity`, never the shipments array. Reuse that live state here so the
       // unserviced/zone check matches what's actually being shown and quoted.
+      const liveDir = i === activeIdx ? (parsed?.direction || "outbound") : (s.direction || "outbound");
+      if (liveDir === "local") return { rc: null, unserviced: null }; // BDR's own province is always serviceable by definition.
       if (i === activeIdx && rateCity) {
         const pIsInbound = (parsed?.direction || "outbound") === "inbound";
         // Inbound rates off the pickup (US) side — dest_state there is the Canadian
@@ -1449,7 +1445,7 @@ export default function App() {
         const pLat   = pIsInbound ? parsed?.pickup_lat : parsed?.dest_lat;
         const pLon   = pIsInbound ? parsed?.pickup_lon : parsed?.dest_lon;
         const pZip   = pIsInbound ? null : parsed?.dest_zip;
-        return { rc: rateCity, unserviced: isUnserviced(pCity, pState, pLat, pLon, pZip, rateCity.zoneMiles) };
+        return { rc: rateCity, unserviced: isUnserviced(cities, servicedStates, pCity, pState, pLat, pLon, pZip, rateCity.zoneMiles) };
       }
       const dir = s.direction || "outbound";
       const isInbound = dir === "inbound";
@@ -1458,8 +1454,8 @@ export default function App() {
       const destCity = isInbound ? s.pickup_location : s.dest_city;
       const destState = isInbound ? null : s.dest_state;
       const destZip = isInbound ? null : s.dest_zip;
-      const rc = (lat && lon) || destZip ? resolveZone(destZip, lat, lon, destCity) : null;
-      const unserviced = isUnserviced(destCity, destState, lat, lon, destZip, rc?.zoneMiles);
+      const rc = (lat && lon) || destZip ? resolveZone(cities, destZip, lat, lon, destCity) : null;
+      const unserviced = isUnserviced(cities, servicedStates, destCity, destState, lat, lon, destZip, rc?.zoneMiles);
       return { rc, unserviced };
     });
     const unservicedFlags = shipmentZones.map(z => z.unserviced);
@@ -1477,10 +1473,16 @@ export default function App() {
         const qt = buildQuoteText(s, rateCity, rateResult, fsc, accs, customAcc, BDR_SIGNATURE.name, BDR_SIGNATURE.company, BDR_SIGNATURE.phone, isFirst);
         return { qt, rr: rateResult, rc: rateCity };
       }
+      if (dir === "local") {
+        const rr = getRate(lanes, s.origin, "local", null, s.skids, s.weight_lbs, s.line_items, s.footage);
+        if (!rr?.base) return { qt: "", rr, rc: null };
+        const qt = buildQuoteText(s, null, rr, fsc, accs, customAcc, BDR_SIGNATURE.name, BDR_SIGNATURE.company, BDR_SIGNATURE.phone, isFirst);
+        return { qt, rr, rc: null };
+      }
       const rc = shipmentZones[i].rc;
       if (!rc) return { qt: "", rr: null, rc: null };
       const origin = dir === "inbound" ? (s.dest_state === "QC" ? "Quebec" : "Ontario") : s.origin;
-      const rr = getRate(origin, rc, s.skids, s.weight_lbs, s.line_items, s.footage, dir);
+      const rr = getRate(lanes, origin, dir, rc, s.skids, s.weight_lbs, s.line_items, s.footage);
       if (!rr?.base) return { qt: "", rr, rc };
       const qt = buildQuoteText(s, rc, rr, fsc, accs, customAcc, BDR_SIGNATURE.name, BDR_SIGNATURE.company, BDR_SIGNATURE.phone, isFirst);
       return { qt, rr, rc };
@@ -2607,7 +2609,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         {isNearest && <div style={{ fontSize:11, color:"#aaa", marginTop:2 }}>Nearest to {parsed.dest_city} ({rateCity?.distance} mi)</div>}
                         {rateResult?.zonePct > 0 && (
                           <div style={{ fontSize:11, color:C.amber, marginTop:2, fontWeight:700 }}>
-                            Zone: {rateResult.zoneTierLabel} ({rateCity?.zoneMiles} mi from {rateCity?.city})
+                            Zone: {rateResult.zoneTierLabel}
                           </div>
                         )}
                       </div>
@@ -2787,7 +2789,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       <div style={{ fontSize:13, color:C.muted, marginTop:2 }}>
                         {s.skids} skids
                         {asr.rateCity ? ` · Rate via ${asr.rateCity.city}, ${asr.rateCity.state}${asr.isNearest ? ` (${asr.rateCity.distance} mi from delivery)` : ""}` : ""}
-                        {asr.rateResult?.zonePct > 0 ? ` · Zone: ${asr.rateResult.zoneTierLabel} (${asr.rateCity?.zoneMiles} mi)` : ""}
+                        {asr.rateResult?.zonePct > 0 ? ` · Zone: ${asr.rateResult.zoneTierLabel}` : ""}
                       </div>
                     </div>
                     {asr.total && (
