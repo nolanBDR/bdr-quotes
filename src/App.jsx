@@ -582,6 +582,7 @@ SCHEMA:
       "line_items": [{"skids":number,"dim_l":number,"dim_w":number,"dim_h":number,"stack_height":number or null}],
       "additional_pickups": [{"location":"string","lat":number,"lon":number}],
       "additional_deliveries": [{"location":"string","lat":number,"lon":number}],
+      "accessorials": {"driver_assist":boolean,"liftgate":boolean,"no_crossdock":boolean,"floorload":boolean,"straight_truck":boolean},
       "pickup_date": "YYYY-MM-DD or descriptive string or null",
       "delivery_date": "YYYY-MM-DD or descriptive string or null",
       "consignee": "name of the company or person receiving the shipment or null",
@@ -592,6 +593,13 @@ SCHEMA:
     }
   ]
 }
+
+ACCESSORIAL RULES — set true ONLY when the text clearly asks for it, false otherwise (never guess):
+- driver_assist: "driver assist", "unload assist", "driver to help unload/load".
+- liftgate: "liftgate", "lift gate".
+- no_crossdock: "no crossdock", "no cross-dock", "direct delivery only", "cannot cross dock", "must go direct/direct only".
+- floorload: "floor loaded", "floorloaded", "floor load", "not palletized", "no pallets".
+- straight_truck: "straight truck only", "straight truck required", "no tractor trailer", "small truck/straight truck needed" (not just a mention that the shipment happens to be small).
 
 ZIP RULES:
 - dest_zip: extract ONLY if a literal 5-digit ZIP code appears in the source text (e.g. in the delivery address). NEVER infer, guess, or fill in a plausible ZIP for a named city the way you do for dest_lat/dest_lon — an incorrect guessed ZIP silently misroutes pricing, which is worse than leaving it null.
@@ -722,6 +730,7 @@ SCHEMA:
       "line_items": [{"skids":number,"dim_l":number,"dim_w":number,"dim_h":number,"stack_height":number or null}],
       "additional_pickups": [{"location":"string","lat":number,"lon":number}],
       "additional_deliveries": [{"location":"string","lat":number,"lon":number}],
+      "accessorials": {"driver_assist":boolean,"liftgate":boolean,"no_crossdock":boolean,"floorload":boolean,"straight_truck":boolean},
       "pickup_date": "YYYY-MM-DD or descriptive string or null",
       "delivery_date": "YYYY-MM-DD or descriptive string or null",
       "consignee": "name of company or person receiving the shipment or null",
@@ -740,6 +749,7 @@ RULES:
 - Weight always in lbs. Convert: kg×2.205, tonnes×2205.
 - origin: "Ontario" unless pickup is clearly in Quebec.
 - Pieces/pallets/skids/units/PLT all count as skids.
+- accessorials: set true ONLY when the document clearly states it, false otherwise (never guess). driver_assist: "driver assist"/"unload assist". liftgate: "liftgate"/"lift gate". no_crossdock: "no crossdock"/"direct delivery only"/"must go direct". floorload: "floor loaded"/"floorloaded"/"not palletized". straight_truck: "straight truck only/required"/"no tractor trailer".
 
 ZIP RULES:
 - dest_zip: extract ONLY if a literal 5-digit ZIP code appears in the document (e.g. in the delivery address block). NEVER infer or guess a ZIP for a named city — an incorrect guessed ZIP silently misroutes pricing, worse than leaving it null.`;
@@ -846,6 +856,13 @@ function cleanJson(str) {
 
 const FSC_OPTS = [{v:0,l:"None"},{v:0.08,l:"8%"},{v:0.15,l:"15%"},{v:0.18,l:"18%"},{v:0.20,l:"20%"},{v:0.30,l:"30%"},{v:0.40,l:"40%"}];
 const ACC_OPTS = [{id:"da",l:"Driver Assist",n:"from $75"},{id:"lg",l:"Liftgate",n:"from $75"},{id:"nc",l:"No Crossdock",n:"from $150"},{id:"fl",l:"Floorload",n:"+10% markup"},{id:"st",l:"Straight Truck",n:"$100"}];
+
+// Maps the Claude parser's `accessorials` object (one boolean per plain-English
+// trigger) onto the ACC_OPTS checkbox ids used by `accs` state.
+function accsFromParsed(a) {
+  if (!a) return {};
+  return { da: !!a.driver_assist, lg: !!a.liftgate, nc: !!a.no_crossdock, fl: !!a.floorload, st: !!a.straight_truck };
+}
 const DIRECTION_OPTS = [{v:"outbound",l:"Outbound (ON/QC → US)"},{v:"inbound",l:"Inbound (US → ON/QC)"}];
 
 // BDR's own signature — quotes are signed with this regardless of who fills the form.
@@ -1298,6 +1315,7 @@ export default function App() {
       const first = parsed_list[0];
       setParsed(first);
       resolveRate(first);
+      setAccs(accsFromParsed(first.accessorials));
       setQuoteTexts([]);
       setStep("review");
       const match = matchCustomer(first.broker_company, first.broker_name);
@@ -1328,6 +1346,7 @@ export default function App() {
       const first = parsed_list[0];
       setParsed(first);
       resolveRate(first);
+      setAccs(accsFromParsed(first.accessorials));
       setQuoteTexts([]);
       setStep("review");
       const match = matchCustomer(result.broker_company, result.broker_name);
@@ -2339,6 +2358,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     setActiveIdx(i);
                     setParsed(s);
                     resolveRate(s);
+                    setAccs(accsFromParsed(s.accessorials));
                     setQuoteText(quoteTexts[i] || "");
                   }} style={{
                     padding:"8px 16px", borderRadius:8, cursor:"pointer", fontSize:13, fontWeight:activeIdx===i?700:400,
@@ -2685,6 +2705,22 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     ))}
                   </div>
                   <input value={customAcc} onChange={e=>setCustomAcc(e.target.value)} placeholder="Add a custom accessorial charge…" style={input}/>
+                  {(extraPickupsB > 0 || extraDeliveriesB > 0) && (
+                    <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${C.border}` }}>
+                      {extraPickupsB > 0 && (
+                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:14, color:C.text, marginBottom:6 }}>
+                          <span>Additional Pickup{(parsed.additional_pickups||[]).length>1?"s":""} ({(parsed.additional_pickups||[]).length})</span>
+                          <span style={{ fontWeight:700 }}>${extraPickupsB}</span>
+                        </div>
+                      )}
+                      {extraDeliveriesB > 0 && (
+                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:14, color:C.text }}>
+                          <span>Additional Deliver{(parsed.additional_deliveries||[]).length>1?"ies":"y"} ({(parsed.additional_deliveries||[]).length})</span>
+                          <span style={{ fontWeight:700 }}>${extraDeliveriesB}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Generate Quote button */}
