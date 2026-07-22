@@ -426,16 +426,26 @@ function LanePieChart({ slices }) {
 // Stacked    = raw ÷ stackHeight (2 if "stackable" with no number, 1 if not stackable)
 // Total footage across all line items → ceil(total ÷ 2) = effective skids for rate
 
+// A trailer is only ~99" wide inside, so a "width" bigger than that can't be
+// real — the broker almost certainly gave W×L×H (or just swapped the two)
+// instead of the expected L×W×H. Auto-correct the math, but flag it (see
+// `swapped` on the returned line item) so staff can confirm the actual order
+// with the broker before quoting off it.
+const MAX_TRAILER_WIDTH_IN = 99;
+
 function calcLineItem(skids, dimL, dimW, dimH, stackHeight) {
   if (!dimL && !dimW && !dimH) return null;
-  const L        = dimL || 0;   // first number = Length (as written by broker)
-  const W        = dimW || 0;   // second number = Width
+  const rawL     = dimL || 0;
+  const rawW     = dimW || 0;
+  const swapped  = rawW > MAX_TRAILER_WIDTH_IN;
+  const L        = swapped ? rawW : rawL;   // first number = Length (as written by broker), unless that'd make Width impossibly wide
+  const W        = swapped ? rawL : rawW;
   const H        = dimH || 0;   // third number = Height
   const divisor  = W > 48 ? 12 : W < 32 ? 36 : 24;
   const rawFt    = (L * skids) / divisor;
   const stackH   = stackHeight || 1;
   const netFt    = rawFt / stackH;
-  return { skids, L, W, dimH: H, divisor, stackH, rawFt: +rawFt.toFixed(2), netFt: +netFt.toFixed(2) };
+  return { skids, L, W, dimH: H, divisor, stackH, rawFt: +rawFt.toFixed(2), netFt: +netFt.toFixed(2), swapped };
 }
 
 // Calculate combined dim basis across all line items
@@ -2427,7 +2437,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                               return (
                                 <tr key={i} style={{ background: i%2===0 ? "#fff" : "#fafafa" }}>
                                   {[["skids",li.skids],["dim_l",li.dim_l],["dim_w",li.dim_w],["dim_h",li.dim_h],["stack_height",li.stack_height]].map(([k,v]) => (
-                                    <td key={k} style={{ padding:"4px 6px", border:`1px solid ${C.border}` }}>
+                                    <td key={k} style={{ padding:"4px 6px", border:`1px solid ${C.border}`, background: calc?.swapped && (k==="dim_l"||k==="dim_w") ? "#fff7ed" : undefined }}>
                                       <input type="number" value={v??""} placeholder={k==="stack_height"?"—":"48"}
                                         onChange={e => {
                                           const items = parsed.line_items.map((x,j) => j===i ? {...x,[k]:e.target.value===''?null:parseFloat(e.target.value)} : x);
@@ -2464,6 +2474,12 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                             ) : null;
                           })()}
                         </table>
+                      </div>
+                    )}
+
+                    {parsed.line_items?.some(li => calcLineItem(li.skids, li.dim_l, li.dim_w, li.dim_h, li.stack_height)?.swapped) && (
+                      <div style={{ marginBottom:12, padding:"10px 14px", background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:8, color:"#c2410c", fontSize:12 }}>
+                        A trailer is only about {MAX_TRAILER_WIDTH_IN}" wide — one or more highlighted line items gave a "W" bigger than that, so L/W were auto-swapped for this rate (shown above). Confirm with the customer whether they're giving dimensions as L×W×H or W×L×H before quoting off this.
                       </div>
                     )}
 
