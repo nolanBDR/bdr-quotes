@@ -452,8 +452,16 @@ function getRate(lanes, origin, direction, rateCity, skids, weightLbs, lineItems
   const weightSkids = weight > 0 ? Math.ceil(weight / 1700) : 0;
   const weightIdx   = weight > 0 ? Math.min(weightSkids - 1, 20) : skidIdx;
 
-  // Dimension basis — across all line items
-  const dimBasis    = calcDimBasis(lineItems);
+  // Dimension basis — across all line items. Guards against a real parser
+  // failure mode: text like "8 skids, 45x48x54 EA" describing one dimension
+  // shared by a stated count of skids sometimes comes back as a single
+  // line_item with skids:1 instead of skids:8 — when there's exactly one
+  // line item, the shipment's own stated skids count is trusted over the
+  // line item's, since one line item can only mean "this is the shipment".
+  const dimBasisLineItems = (lineItems && lineItems.length === 1 && hasSkids && lineItems[0].skids !== skidCount)
+    ? [{ ...lineItems[0], skids: skidCount }]
+    : lineItems;
+  const dimBasis    = calcDimBasis(dimBasisLineItems);
   const dimIdx      = dimBasis ? Math.min(dimBasis.effSkids - 1, 20) : skidIdx;
 
   // Charge logic:
@@ -601,8 +609,8 @@ DIMENSION RULES — use line_items when full L×W×H is given:
 - If only length and width are given, set dim_h = null.
 - When using line_items, set footage = null.
 - Each numbered item (e.g. "1. 48x40x60") = 1 skid (skids:1) unless stated otherwise.
-- "3 skids 48x40x60" → one line_item with skids:3.
-- Total shipment skids = sum of all line_items[].skids.
+- "3 skids 48x40x60" or "8 skids, 45x48x54 EA" → one line_item with skids matching the stated count (3, 8), not 1.
+- Total shipment skids = sum of all line_items[].skids — it must match the shipment's top-level skids count.
 - stack_height: "stackable"=2, "double stack"/"stack 3 high"=3, "not stackable"/"no stack"/"fragile"=null, unstated=null.
 
 FOOTAGE RULES — use when only length is given without width/height:
@@ -708,6 +716,7 @@ RULES:
 - Weight always in lbs. Convert: kg×2.205, tonnes×2205.
 - origin: "Ontario" unless pickup is clearly in Quebec.
 - Pieces/pallets/skids/units/PLT all count as skids.
+- If a line_items entry is used: each numbered item (e.g. "1. 48x40x60") = 1 skid (skids:1) unless a quantity is stated. If ONE dimension applies to a stated COUNT of identical skids — "8 skids, 45x48x54 EA", "3 skids 48x40x60", "5 pallets @ 40x48x50" — set that line item's own skids field to the stated count, not 1. Total shipment skids = sum of all line_items[].skids — it must match the shipment's top-level skids count.
 - accessorials: set true ONLY when the document clearly states it, false otherwise (never guess). driver_assist: "driver assist"/"unload assist". liftgate: "liftgate"/"lift gate". no_crossdock: "no crossdock"/"direct delivery only"/"must go direct". floorload: "floor loaded"/"floorloaded"/"not palletized". straight_truck: "straight truck only/required"/"no tractor trailer".
 
 ZIP RULES:
