@@ -2350,19 +2350,23 @@ Be concise and actionable. When asked for recommendations, be specific about whi
             </div>
 
             <div>
-              {/* Coverage */}
+              {/* Coverage — derived live from `cities` (deriveAnchorCities(lanes)),
+                  not a hardcoded list, so it can never drift from what's actually
+                  loaded in rate_lanes the way the old static version did. */}
               <div style={{ ...card, background:"#fdf2f4", border:`1px solid #e8b4be` }}>
                 <div style={{ fontSize:14, fontWeight:700, color:C.amber, marginBottom:10 }}>Rate Sheet Coverage</div>
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10 }}>
-                  {[["TX","Houston · Dallas · San Antonio"],["MI","Detroit · Lansing · Grand Rapids · Traverse City"],["OH","Toledo · Cleveland · Cincinnati · Columbus"],["KY","Louisville · Lexington"],["IL","Chicago"],["IN","Indianapolis · Fort Wayne · South Bend · Evansville"],["MO","St Louis · Kansas City · Joplin"],["TN","Nashville · Memphis · Knoxville · Chattanooga"]].map(([st,cities]) => (
+                  {Object.entries(
+                    cities.reduce((acc, c) => { (acc[c.state] ||= []).push(c.city); return acc; }, {})
+                  ).sort(([a],[b]) => a.localeCompare(b)).map(([st, citiesForState]) => (
                     <div key={st} style={{ background:"#fff", borderRadius:8, padding:"10px 12px", border:`1px solid #e8b4be` }}>
                       <div style={{ fontSize:18, fontWeight:800, color:C.amber, marginBottom:2 }}>{st}</div>
-                      <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{cities}</div>
+                      <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{citiesForState.sort().join(" · ")}</div>
                     </div>
                   ))}
                 </div>
                 <div style={{ fontSize:12, color:C.subtle, marginTop:10 }}>
-                  For towns not listed above, the nearest rate-sheet city is used automatically. Destinations further from a city's core zone may carry a distance-based surcharge.
+                  For towns not listed above, the nearest rate-sheet city is used automatically — pricing is based on skid count, not distance.
                 </div>
               </div>
             </div>
