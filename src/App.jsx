@@ -525,7 +525,7 @@ async function parseEmailWithClaude(text) {
   let res, attempts = 0;
   while (attempts < 3) {
     res = await claudeFetch({
-      model:"claude-haiku-4-5-20251001", max_tokens:1500,
+      model:"claude-haiku-4-5-20251001", max_tokens:8192,
       system:`You are a parser for a Canadian LTL freight carrier (GTA/Montreal pickup). Classify the email then extract all shipment data. Return ONLY valid JSON with no markdown or extra text.
 
 SCHEMA:
@@ -653,6 +653,9 @@ COORDINATES: Always include accurate lat/lon for both pickup and destination. Us
     result = JSON.parse(cleanJson(jsonMatch[0]));
   } catch(jsonErr) {
     console.error("JSON parse failed. Raw response:\n", rawText);
+    if (data.stop_reason === "max_tokens") {
+      throw new Error("This email has too many shipments/line items to parse in one go — try splitting it into smaller pastes (e.g. 1-2 destinations at a time).");
+    }
     throw new Error(`JSON parse error: ${jsonErr.message}`);
   }
   return (result.shipments||[result]).map(s => ({
@@ -725,7 +728,7 @@ ZIP RULES:
   let attempts = 0;
   while (attempts < 3) {
     const res = await claudeFetch({
-        model:"claude-sonnet-4-6", max_tokens:4096,
+        model:"claude-sonnet-4-6", max_tokens:8192,
         system: SYSTEM,
         messages:[{role:"user",content:[
           {type:"document",source:{type:"base64",media_type:"application/pdf",data:base64Data}},
@@ -738,7 +741,15 @@ ZIP RULES:
     const rawText = data.content.map(b=>b.text||"").join("");
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No JSON in PDF response.");
-    const parsed = JSON.parse(cleanJson(jsonMatch[0]));
+    let parsed;
+    try {
+      parsed = JSON.parse(cleanJson(jsonMatch[0]));
+    } catch (jsonErr) {
+      if (data.stop_reason === "max_tokens") {
+        throw new Error("This document has too many shipments/line items to parse in one go — try splitting it up.");
+      }
+      throw new Error(`JSON parse error: ${jsonErr.message}`);
+    }
     const result = parsed.shipments ? parsed : {shipments:[parsed], broker_name:parsed.broker_name, broker_company:parsed.broker_company};
     try { localStorage.setItem(ck, JSON.stringify(result)); } catch(e) {}
     return result;
