@@ -948,6 +948,8 @@ export default function App() {
   const [brokerEmail, setBrokerEmail]     = useState("");
   const [emailSendState, setEmailSendState] = useState({}); // {[shipmentIdx]: "sending"|"sent"|"error"}
   const [emailRecipient, setEmailRecipient] = useState({}); // {[shipmentIdx]: actual "to" address the backend used}
+  const [combinedSendState, setCombinedSendState] = useState("idle"); // idle | sending | sent | error
+  const [combinedResults, setCombinedResults] = useState([]); // [{to, count}] — one entry per email actually sent
   const debounce                    = useRef(null);
   const [tab, setTab]               = useState("quote");   // quote | history
 
@@ -1575,6 +1577,73 @@ export default function App() {
     } catch (e) {
       console.error("Could not send quote email:", e);
       setEmailSendState(prev => ({ ...prev, [idx]: "error" }));
+    }
+  };
+
+  // Sends every serviceable shipment's quote as ONE email (or one email per
+  // distinct recipient, if a batch happens to mix e.g. a Texas destination
+  // into an otherwise-outbound run) instead of firing off a separate email
+  // per shipment. Each shipment keeps its own accept/decline buttons inside
+  // the combined message, so accepting/declining still works per-shipment.
+  const sendCombinedQuoteEmail = async () => {
+    const list = shipments.length > 0 ? shipments : [parsed];
+    const payload = list.map((s, i) => {
+      const asr = allShipmentRates[i] || {};
+      const qt = quoteTexts[i] || "";
+      const timestamp = quoteTimestamps[i];
+      if (asr.unserviced || !timestamp || !qt) return null;
+      return {
+        timestamp,
+        date: new Date().toLocaleDateString("en-CA"),
+        time: new Date().toLocaleTimeString("en-CA", { hour:"2-digit", minute:"2-digit" }),
+        broker_name: s.broker_name || brokerName || "—",
+        broker_company: s.broker_company || brokerCompany || "",
+        broker_email: brokerEmail || "",
+        broker_phone: brokerPhone || "",
+        origin: s.origin || "", dest_city: s.dest_city || "", dest_state: s.dest_state || "",
+        direction: s.direction || "outbound",
+        skids: s.skids, weight_lbs: s.weight_lbs,
+        base_rate: asr.base, fsc, total: asr.total,
+        rate_city: asr.rateCity?.city, basis_label: asr.rateResult?.basisLabel,
+        zone_tier: asr.rateResult?.zoneTierLabel || null, zone_pct: asr.rateResult?.zonePct || 0,
+        zone_miles: asr.rateCity?.zoneMiles ?? null, zone_source: asr.rateCity?.zoneSource || null,
+        quote_text: qt,
+      };
+    }).filter(Boolean);
+    if (!payload.length || !brokerEmail.trim()) return;
+
+    setCombinedSendState("sending");
+    try {
+      const res = await fetch("/api/send-combined-quote-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quotes: payload }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "send_failed");
+      // Mirror the combined send into each shipment's own per-card state so
+      // the UI can't imply "not sent yet" for something already sent, and a
+      // stray click on an individual "Send Email" button won't double-send.
+      // Recipient comes from the server's actual routing (which may differ
+      // from the client's own guess, e.g. under DEV_EMAIL_OVERRIDE), keyed by
+      // timestamp so each card shows where its quote really went.
+      const recipientByTimestamp = {};
+      (data.results || []).forEach(r => (r.timestamps || []).forEach(ts => { recipientByTimestamp[ts] = r.to; }));
+      setEmailSendState(prev => {
+        const next = { ...prev };
+        list.forEach((_, i) => { if (recipientByTimestamp[quoteTimestamps[i]]) next[i] = "sent"; });
+        return next;
+      });
+      setEmailRecipient(prev => {
+        const next = { ...prev };
+        list.forEach((_, i) => { const to = recipientByTimestamp[quoteTimestamps[i]]; if (to) next[i] = to; });
+        return next;
+      });
+      setCombinedResults((data.results || []).map(r => ({ to: r.to, count: r.count })));
+      setCombinedSendState("sent");
+    } catch (e) {
+      console.error("Could not send combined quote email:", e);
+      setCombinedSendState("error");
     }
   };
 
@@ -2783,14 +2852,29 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   {allCopied ? "✓ All Copied!" : `Copy All ${quoteTexts.filter((qt,i) => qt && !allShipmentRates[i]?.unserviced).length} Quotes`}
                 </button>
               )}
+              {shipments.length > 1 && quoteTexts.filter(Boolean).length > 1 && (
+                <button onClick={sendCombinedQuoteEmail} disabled={combinedSendState==="sending"||!brokerEmail.trim()} style={{
+                  padding:"13px 24px", fontSize:15, fontWeight:700, borderRadius:8,
+                  cursor: combinedSendState==="sending"||!brokerEmail.trim() ? "not-allowed" : "pointer",
+                  background: combinedSendState==="sent" ? C.green : combinedSendState==="error" ? C.error : C.navy,
+                  color:"#fff", border:"none", transition:"background 0.3s",
+                }}>
+                  {combinedSendState==="sending" ? "Sending…" : combinedSendState==="sent" ? "✓ Sent" : combinedSendState==="error" ? "✗ Failed — retry" : `Combine ${quoteTexts.filter((qt,i) => qt && !allShipmentRates[i]?.unserviced).length} Into One Email`}
+                </button>
+              )}
               <button onClick={()=>{setStep("review");setError(null);}} style={{ padding:"12px 22px", fontSize:15, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500 }}>
                 ← Adjust
               </button>
-              <button onClick={()=>{ setStep("input"); setEmail(""); setParsed(null); setShipments([]); setRateCity(null); setRateResult(null); setQuoteText(""); setQuoteTexts([]); setAllShipmentRates([]); setError(null); }}
+              <button onClick={()=>{ setStep("input"); setEmail(""); setParsed(null); setShipments([]); setRateCity(null); setRateResult(null); setQuoteText(""); setQuoteTexts([]); setAllShipmentRates([]); setError(null); setCombinedSendState("idle"); setCombinedResults([]); }}
                 style={{ padding:"12px 22px", fontSize:15, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500 }}>
                 New Quote
               </button>
             </div>
+            {shipments.length > 1 && combinedSendState==="sent" && combinedResults.length > 0 && (
+              <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>
+                Sent {combinedResults.map(r => `${r.count} shipment${r.count===1?"":"s"} to ${r.to}`).join(" · ")}
+              </div>
+            )}
 
             {/* Stacked quote cards - one per shipment */}
             {(shipments.length > 0 ? shipments : [parsed]).map((s, i) => {
