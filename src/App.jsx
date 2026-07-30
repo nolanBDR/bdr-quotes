@@ -1,4 +1,6 @@
 ﻿import { useState, useCallback, useRef, useEffect } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import { CUSTOMER_PROFILES } from "./customerProfiles.js";
 import { ZIP3_CENTROIDS } from "./zip3Zones.js";
 import bdrLogo from "./assets/bdr-logo.png";
@@ -510,7 +512,7 @@ async function _drainClaudeQueue() {
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(ANTHROPIC_KEY ? { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" } : {}) },
+      headers: { "Content-Type": "application/json", ...(ANTHROPIC_KEY ? { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true", "anthropic-beta": "output-128k-2025-02-19" } : {}) },
       body: JSON.stringify(bodyObj),
     });
     resolve(r);
@@ -525,7 +527,7 @@ async function parseEmailWithClaude(text) {
   let res, attempts = 0;
   while (attempts < 3) {
     res = await claudeFetch({
-      model:"claude-haiku-4-5-20251001", max_tokens:8192,
+      model:"claude-haiku-4-5-20251001", max_tokens:32000,
       system:`You are a parser for a Canadian LTL freight carrier (GTA/Montreal pickup). Classify the email then extract all shipment data. Return ONLY valid JSON with no markdown or extra text.
 
 SCHEMA:
@@ -630,6 +632,11 @@ MULTIPLE SHIPMENTS:
 - Different destinations = separate entries in shipments[].
 - Same destination, different dates with clearly distinct loads = separate entries.
 - Same destination, same date = one entry.
+- Same origin/destination, broker is asking for rates across MULTIPLE DIFFERENT SKID COUNTS rather than describing one load — this is a rate-table request, not a single shipment, however it's phrased:
+  - Listed line by line: "give me rates per skid" followed by "1 SKID -, 2 -, 3 -, ... 20 -".
+  - Stated as a range in prose, with no line-by-line list at all: "rate table for 1-20 skids", "quote 1 through 20 skids", "pricing for 5 to 15 skids", "per-skid rates up to 20", "sliding scale 1-20 skids". Expand the stated range into individual counts yourself — do not require the broker to have spelled each one out.
+  - Any explicit mention of "rate table"/"rate sheet"/"per-skid pricing"/"price matrix" alongside a skid range or count list.
+  In every case: create ONE ENTRY PER SKID COUNT (listed or expanded from the range), not one merged entry. Every entry shares the same origin/pickup_location/dest_city/dest_state/dest_zip/dest_lat/dest_lon; only \`skids\` differs between them.
 
 COORDINATES: Always include accurate lat/lon for both pickup and destination. Use your knowledge of city coordinates.`,
       messages:[{role:"user",content:`Parse this:\n\n${text}`}],
@@ -720,6 +727,7 @@ RULES:
 - origin: "Ontario" unless pickup is clearly in Quebec.
 - Pieces/pallets/skids/units/PLT all count as skids.
 - If a line_items entry is used: each numbered item (e.g. "1. 48x40x60") = 1 skid (skids:1) unless a quantity is stated. If ONE dimension applies to a stated COUNT of identical skids — "8 skids, 45x48x54 EA", "3 skids 48x40x60", "5 pallets @ 40x48x50" — set that line item's own skids field to the stated count, not 1. Total shipment skids = sum of all line_items[].skids — it must match the shipment's top-level skids count.
+- If the document asks for rates across MULTIPLE DIFFERENT SKID COUNTS for the same lane instead of describing one load — this is a rate-table request, however it's phrased: a list like "1 skid -, 2 -, 3 -, ... 20 -", OR a range stated in prose with no line-by-line list ("rate table for 1-20 skids", "pricing for 5 to 15 skids", "per-skid rates up to 20") — expand the range into individual counts yourself. Create ONE SHIPMENT ENTRY PER SKID COUNT (listed or expanded), not one merged entry. Every entry shares the same origin/pickup_location/dest_city/dest_state/dest_zip/dest_lat/dest_lon; only \`skids\` differs.
 - accessorials: set true ONLY when the document clearly states it, false otherwise (never guess). driver_assist: "driver assist"/"unload assist". liftgate: "liftgate"/"lift gate". no_crossdock: "no crossdock"/"direct delivery only"/"must go direct". floorload: "floor loaded"/"floorloaded"/"not palletized". straight_truck: "straight truck only/required"/"no tractor trailer".
 
 ZIP RULES:
@@ -728,7 +736,7 @@ ZIP RULES:
   let attempts = 0;
   while (attempts < 3) {
     const res = await claudeFetch({
-        model:"claude-sonnet-4-6", max_tokens:8192,
+        model:"claude-sonnet-4-6", max_tokens:32000,
         system: SYSTEM,
         messages:[{role:"user",content:[
           {type:"document",source:{type:"base64",media_type:"application/pdf",data:base64Data}},
@@ -854,29 +862,174 @@ function routeQuoteEmail(dest_state, direction) {
 }
 
 // ── Design tokens — BDR International branding (colours pulled from bdrint.ca) ──
+// Mirrored as CSS custom properties in index.css for the few global selectors
+// that need them — change both together.
 const C = {
   bg: "#F2EFE9",          // BDR cream section background
   card: "#ffffff",
-  border: "#e3dccd",      // warm tan border
+  border: "#e5ded0",      // warm tan border — the default hairline
+  borderStrong: "#d6cbb6",// same hue, one step up for emphasis/hover
   navy: "#1B232E",        // BDR heading/footer navy
   navyLight: "#2c3646",
-  amber: "#641833",       // BDR burgundy (primary brand colour)
+  // `amber` is a legacy key name — the value is BDR burgundy, the primary brand
+  // colour. Prefer `burgundy`/`burgundyLight` in new code; both point here so
+  // the ~100 existing `C.amber` references keep working.
+  amber: "#641833",
   amberLight: "#f7e9ed",
+  burgundy: "#641833",
+  burgundyLight: "#f7e9ed",
+  burgundyHover: "#4e1228",// pressed/hover state for burgundy fills
   green: "#16a34a",
   greenLight: "#f0fdf4",
   text: "#1B232E",
   muted: "#5c5f66",
-  subtle: "#9b969e",
+  // Warm grey, darkened from the original #9b969e — that only hit 2.9:1 on white,
+  // under AA, and it's used for small labels, not just placeholders. Now 5.7:1 on
+  // white / 5.0:1 on cream, still clearly lighter than `muted` (6.4/5.6).
+  subtle: "#6b665e",
   error: "#dc2626",
   errorLight: "#fef2f2",
   highlight: "#f7e9ed",
   surface: "#efe8dc",     // warm neutral surface for inactive buttons/tables
   surfaceLight: "#f7f4ee",// near-white warm surface for subtle panels
+  // Text on the navy rate card. Replaces a scattered literal #aaa (which already
+  // passed at 6.8:1) — this is about having one named token, plus a bit more
+  // headroom at 9.5:1 for 11px labels.
+  onNavy: "#ffffff",
+  onNavyMuted: "#c3c9d2",
+  // Burgundy can't be used as an accent *on* navy (#641833 on #1B232E is ~1.3:1
+  // — effectively invisible). This is the same hue lightened until it reads,
+  // matching the light rose the weight-bump notice already used.
+  accentOnNavy: "#f0a8ba",
 };
 
-const input = { width:"100%", boxSizing:"border-box", padding:"10px 14px", fontSize:14, border:`1px solid ${C.border}`, borderRadius:4, color:C.text, background:"#fff", outline:"none", fontFamily:"inherit" };
-const label = { display:"block", fontSize:12, fontWeight:600, color:"#444", marginBottom:5, letterSpacing:"0.02em" };
-const card  = { background:"#fff", border:`1px solid ${C.border}`, borderRadius:6, padding:24, marginBottom:16, boxShadow:"0 1px 3px rgba(0,0,0,0.07)" };
+// One radius scale, so panels/controls/pills stop disagreeing (the app
+// previously mixed 4/6/8/10/12 arbitrarily).
+const R = { sm: 6, md: 8, lg: 12, xl: 16, pill: 999 };
+
+// Layered, low-opacity shadows tinted toward the navy rather than pure black —
+// on a cream background pure black reads as grey haze.
+const S = {
+  sm: "0 1px 2px rgba(27,35,46,0.06)",
+  md: "0 1px 3px rgba(27,35,46,0.06), 0 4px 12px rgba(27,35,46,0.05)",
+  lg: "0 2px 6px rgba(27,35,46,0.07), 0 12px 32px rgba(27,35,46,0.09)",
+};
+
+const input = { width:"100%", boxSizing:"border-box", padding:"11px 14px", fontSize:14, border:`1px solid ${C.border}`, borderRadius:R.md, color:C.text, background:"#fff", outline:"none", fontFamily:"inherit", transition:"border-color 0.15s, box-shadow 0.15s" };
+const label = { display:"block", fontSize:11, fontWeight:700, color:C.muted, marginBottom:6, letterSpacing:"0.04em", textTransform:"uppercase" };
+const card  = { background:"#fff", border:`1px solid ${C.border}`, borderRadius:R.lg, padding:24, marginBottom:16, boxShadow:S.md };
+
+// ── Lane map ──────────────────────────────────────────────────
+// Pickup → delivery for the shipment being quoted, plus the rate-point anchor
+// the price is actually derived from. That third pin is the one that earns its
+// keep: pricing keys off the *nearest anchor city*, not the real destination,
+// so a delivery quietly rating off an anchor a long way away is a mis-price
+// waiting to happen — and it's far easier to catch on a map than in text.
+//
+// Leaflet is imported as a module rather than pulled from a CDN so it still
+// works with no network in dev. Pins are divIcons instead of L.marker's default
+// icon: that one points at PNG assets which break under bundlers, and divIcon
+// takes the brand colours directly.
+const mapPin = (color, size = 16, rotate = 0) => L.divIcon({
+  className: "",
+  html: `<div style="width:${size}px;height:${size}px;background:${color};border:3px solid #fff;`
+      + `box-shadow:0 1px 5px rgba(27,35,46,0.45);border-radius:${rotate ? "3px" : "50%"};`
+      + `transform:rotate(${rotate}deg)"></div>`,
+  iconSize:   [size + 6, size + 6],
+  iconAnchor: [(size + 6) / 2, (size + 6) / 2],
+});
+
+function LaneMap({ pickup, dest, ratePoint, height = 260 }) {
+  const holder    = useRef(null);
+  const mapRef    = useRef(null);
+  const layersRef = useRef(null);
+
+  // Finite-number checks, not just != null: anchor coords come through
+  // `+l.anchor_lat`, so a null column arrives as 0 (a pin in the Atlantic) and a
+  // missing one as NaN (which Leaflet throws on).
+  const ok = (...ns) => ns.every(n => typeof n === "number" && Number.isFinite(n) && n !== 0);
+  const hasLane       = ok(pickup?.lat, pickup?.lon, dest?.lat, dest?.lon);
+  const showRatePoint = !!ratePoint?.distinct && ok(ratePoint?.lat, ratePoint?.lon);
+
+  // Build the map once; tear it down on unmount. Leaflet refuses to initialise
+  // a container that still carries a _leaflet_id, so the remove() in cleanup is
+  // what keeps StrictMode's double-mount from throwing.
+  useEffect(() => {
+    if (!holder.current || mapRef.current) return;
+    const map = L.map(holder.current, {
+      // The map sits inside a scrolling column — the wheel has to scroll the
+      // page, not zoom, or staff get trapped scrolling past it.
+      scrollWheelZoom: false,
+      zoomSnap: 0.25,
+    });
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map);
+    layersRef.current = L.layerGroup().addTo(map);
+    mapRef.current = map;
+    return () => { map.remove(); mapRef.current = null; layersRef.current = null; };
+  }, []);
+
+  // Redraw whenever the resolved coordinates change — geocoding lands async, so
+  // the first paint often has no destination yet.
+  useEffect(() => {
+    const map = mapRef.current, layers = layersRef.current;
+    if (!map || !layers || !hasLane) return;
+    layers.clearLayers();
+
+    const from = [pickup.lat, pickup.lon];
+    const to   = [dest.lat,   dest.lon];
+    const pts  = [from, to];
+
+    L.polyline([from, to], { color:C.burgundy, weight:3, opacity:0.75, dashArray:"8 8" }).addTo(layers);
+    L.marker(from, { icon:mapPin(C.burgundy) }).addTo(layers).bindTooltip(`Pickup — ${pickup.label}`);
+    L.marker(to,   { icon:mapPin(C.navy)     }).addTo(layers).bindTooltip(`Delivery — ${dest.label}`);
+
+    if (showRatePoint) {
+      const rp = [ratePoint.lat, ratePoint.lon];
+      L.polyline([to, rp], { color:C.subtle, weight:2, opacity:0.9 }).addTo(layers);
+      L.marker(rp, { icon:mapPin(C.green, 14, 45) }).addTo(layers)
+        .bindTooltip(`Rate point — ${ratePoint.label}${ratePoint.distance != null ? ` (${ratePoint.distance} mi from delivery)` : ""}`);
+      pts.push(rp);
+    }
+
+    map.fitBounds(L.latLngBounds(pts), { padding:[36,36], maxZoom:9 });
+    // The column can finish laying out after the map mounts; without this the
+    // tiles render against a stale size and leave grey gaps.
+    map.invalidateSize();
+  }, [hasLane, showRatePoint, pickup?.lat, pickup?.lon, pickup?.label,
+      dest?.lat, dest?.lon, dest?.label,
+      ratePoint?.lat, ratePoint?.lon, ratePoint?.label, ratePoint?.distance]);
+
+  if (!hasLane) return null;
+
+  const legend = [
+    { color:C.burgundy, label:"Pickup",     value:pickup.label, diamond:false },
+    { color:C.navy,     label:"Delivery",   value:dest.label,   diamond:false },
+    showRatePoint ? {
+      color:C.green, label:"Rate point", diamond:true,
+      value:`${ratePoint.label}${ratePoint.distance != null ? ` · ${ratePoint.distance} mi from delivery` : ""}`,
+    } : null,
+  ].filter(Boolean);
+
+  return (
+    <div style={card}>
+      <div style={{ fontSize:14, fontWeight:700, color:C.navy, marginBottom:12 }}>Lane Map</div>
+      <div ref={holder} style={{ height, borderRadius:R.md, overflow:"hidden", border:`1px solid ${C.border}`, background:C.surfaceLight }}/>
+      <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:12 }}>
+        {legend.map(l => (
+          <div key={l.label} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12 }}>
+            <span style={{ width:10, height:10, flexShrink:0, background:l.color,
+              borderRadius: l.diamond ? 2 : "50%", transform: l.diamond ? "rotate(45deg)" : "none" }}/>
+            <span style={{ color:C.muted, fontWeight:700, minWidth:68 }}>{l.label}</span>
+            <span style={{ color:C.text }}>{l.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function AutocompleteInput({ value, onChange, suggestions, placeholder, inputStyle }) {
   const [open, setOpen] = useState(false);
@@ -895,7 +1048,7 @@ function AutocompleteInput({ value, onChange, suggestions, placeholder, inputSty
       />
       {show && (
         <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, minWidth:"100%", background:"#fff",
-          border:"1px solid #e7dfd2", borderRadius:10, boxShadow:"0 8px 28px rgba(0,0,0,0.13)", zIndex:200,
+          border:`1px solid ${C.border}`, borderRadius:R.lg, boxShadow:S.lg, zIndex:200,
           maxHeight:240, overflowY:"auto", padding:"4px 0" }}>
           {filtered.map((s, i) => {
             const parts = s.split(", ");
@@ -908,7 +1061,7 @@ function AutocompleteInput({ value, onChange, suggestions, placeholder, inputSty
                   borderLeft: hovered===i ? `3px solid ${C.amber}` : "3px solid transparent",
                   transition:"background 0.1s" }}>
                 <span style={{ fontSize:13, fontWeight:600, color:C.navy }}>{city}</span>
-                {state && <span style={{ fontSize:12, fontWeight:700, color:C.navy, background:"#efe8dc", padding:"2px 7px", borderRadius:5 }}>{state}</span>}
+                {state && <span style={{ fontSize:12, fontWeight:700, color:C.navy, background:C.surface, padding:"2px 7px", borderRadius:R.sm }}>{state}</span>}
               </div>
             );
           })}
@@ -950,6 +1103,12 @@ export default function App() {
   const [emailRecipient, setEmailRecipient] = useState({}); // {[shipmentIdx]: actual "to" address the backend used}
   const [combinedSendState, setCombinedSendState] = useState("idle"); // idle | sending | sent | error
   const [combinedResults, setCombinedResults] = useState([]); // [{to, count}] — one entry per email actually sent
+  const [rateTableMode, setRateTableMode] = useState(false); // true when Step 3 shows a per-skid rate table instead of stacked quote cards
+  const [rateTableText, setRateTableText] = useState("");
+  const [rateTableCopied, setRateTableCopied] = useState(false);
+  const [rateTableTimestamp, setRateTableTimestamp] = useState(null);
+  const [rateTableSendState, setRateTableSendState] = useState("idle"); // idle | sending | sent | error
+  const [rateTableRecipient, setRateTableRecipient] = useState(null);
   const debounce                    = useRef(null);
   const [tab, setTab]               = useState("quote");   // quote | history
 
@@ -1331,6 +1490,8 @@ export default function App() {
       resolveRate(first);
       setAccs(accsFromParsed(first.accessorials));
       setQuoteTexts([]);
+      setRateTableMode(false);
+      setRateTableText("");
       setStep("review");
       const match = matchCustomer(first.broker_company, first.broker_name);
       setMatchedCustomer(match);
@@ -1362,6 +1523,8 @@ export default function App() {
       resolveRate(first);
       setAccs(accsFromParsed(first.accessorials));
       setQuoteTexts([]);
+      setRateTableMode(false);
+      setRateTableText("");
       setStep("review");
       const match = matchCustomer(result.broker_company, result.broker_name);
       setMatchedCustomer(match);
@@ -1443,9 +1606,90 @@ export default function App() {
     ].filter(l => l !== null).join("\n");
   };
 
+  // Same origin + same destination, different skid counts per shipment (e.g. a
+  // broker asking "give me rates for 1 through 20 skids") — one compact table
+  // instead of repeating the full quote block once per skid count.
+  const buildRateTableText = (list, rc, fscRate, ctct, cmp, ph) => {
+    const first = list[0];
+    const dir    = first.direction || "outbound";
+    const origin = dir === "inbound" ? (first.dest_state === "QC" ? "Quebec" : "Ontario") : first.origin;
+    const rows = list
+      .map(s => ({ s, rr: getRate(lanes, origin, dir, dir === "local" ? null : rc, s.skids, s.weight_lbs, s.line_items, s.footage) }))
+      .filter(x => x.rr?.base)
+      .sort((a, b) => (parseInt(a.s.skids) || 0) - (parseInt(b.s.skids) || 0));
+    const lines = rows.map(({ s, rr }) => {
+      const total = r5(rr.base * (1 + fscRate));
+      const label = `${s.skids} skid${Number(s.skids) === 1 ? "" : "s"}`;
+      return `  ${label.padEnd(14)}$${total} CAD`;
+    });
+    return [
+      `Hi ${first.broker_first_name || (first.broker_name || "[Broker Name]").split(" ")[0]},`,
+      "",
+      "Thank you for reaching out. Please find our per-skid rates below.",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "RATE TABLE", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `Pickup:        ${first.pickup_location || first.origin}`,
+      `Destination:   ${first.dest_city}, ${first.dest_state}`,
+      "",
+      ...lines,
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      "Rates valid for 24 hours. Transit times subject to availability.","",
+      ctct||null, cmp||null, ph||null,
+    ].filter(l => l !== null).join("\n");
+  };
+
+  const handleRateTable = () => {
+    if (!shipments.length) return;
+    setError(null);
+    setQuoteTexts([]);
+    setAllShipmentRates([]);
+    const text = buildRateTableText(shipments, rateCity, fsc, BDR_SIGNATURE.name, BDR_SIGNATURE.company, BDR_SIGNATURE.phone);
+    setRateTableText(text);
+    setRateTableTimestamp(Date.now());
+    setRateTableSendState("idle");
+    setRateTableRecipient(null);
+    setRateTableMode(true);
+    setStep("result");
+  };
+
+  const sendRateTableEmail = async () => {
+    const first = shipments[0];
+    if (!first || !rateTableTimestamp || !rateTableText || !brokerEmail.trim()) return;
+
+    setRateTableSendState("sending");
+    try {
+      const res = await fetch("/api/send-rate-table-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          timestamp: rateTableTimestamp,
+          date: new Date().toLocaleDateString("en-CA"),
+          time: new Date().toLocaleTimeString("en-CA", {hour:"2-digit",minute:"2-digit"}),
+          broker_name: first.broker_name || brokerName || "—",
+          broker_company: first.broker_company || brokerCompany || "",
+          broker_email: brokerEmail || "",
+          broker_phone: brokerPhone || "",
+          origin: first.origin || "", dest_city: first.dest_city || "", dest_state: first.dest_state || "",
+          direction: first.direction || "outbound",
+          skid_count: shipments.length,
+          quote_text: rateTableText,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "send_failed");
+      if (data.recipient) setRateTableRecipient(data.recipient);
+      setRateTableSendState("sent");
+    } catch (e) {
+      console.error("Could not send rate table email:", e);
+      setRateTableSendState("error");
+    }
+  };
+
   const handleQuote = () => {
     if (!rateResult?.base) { setError("No rate found. Check origin and destination."); return; }
     setError(null);
+    setRateTableMode(false);
 
     // Pre-compute zone + unserviced status for every shipment so isFirst can be
     // determined cleanly, and so the zone (once resolved) isn't recomputed below.
@@ -1647,6 +1891,16 @@ export default function App() {
     }
   };
 
+  // Same lane, multiple different skid counts (e.g. "give me rates for 1-20
+  // skids") — offer a rate table instead of one repeated quote per skid count.
+  const sameLaneMultiSkid = shipments.length > 1 && shipments.every(s => {
+    const first = shipments[0];
+    return (s.direction || "outbound") === (first.direction || "outbound")
+        && (s.origin || "").trim().toUpperCase() === (first.origin || "").trim().toUpperCase()
+        && (s.dest_city || "").trim().toUpperCase() === (first.dest_city || "").trim().toUpperCase()
+        && (s.dest_state || "").trim().toUpperCase() === (first.dest_state || "").trim().toUpperCase();
+  }) && new Set(shipments.map(s => String(s.skids))).size > 1;
+
   const base        = rateResult?.base;
   const floorloaded   = !!accs["fl"];
   const subtotal      = base ? r5(base*(1+fsc)) : null;
@@ -1758,15 +2012,18 @@ Be concise and actionable. When asked for recommendations, be specific about whi
   const Step = ({ n, label, active, done }) => (
     <div style={{ display:"flex", alignItems:"center", gap:10 }}>
       <div style={{
-        width:28, height:28, borderRadius:"50%",
+        width:28, height:28, borderRadius:"50%", flexShrink:0,
         display:"flex", alignItems:"center", justifyContent:"center",
         fontSize:13, fontWeight:700,
-        background: active ? C.amber : done ? C.green : C.border,
-        color: active||done ? "#fff" : "#999",
+        background: active ? C.burgundy : done ? C.green : C.surface,
+        color: active||done ? "#fff" : C.subtle,
+        // Halo marks "you are here" without needing a heavier colour.
+        boxShadow: active ? "0 0 0 4px rgba(100,24,51,0.12)" : "none",
+        transition:"background 0.2s, box-shadow 0.2s, color 0.2s",
       }}>
         {done ? "✓" : n}
       </div>
-      <span style={{ fontSize:14, fontWeight:active?700:500, color:active?C.amber:done?C.green:"#999" }}>{label}</span>
+      <span style={{ fontSize:14, fontWeight:active?700:500, color:active?C.burgundy:done?C.green:C.subtle }}>{label}</span>
     </div>
   );
 
@@ -1775,25 +2032,51 @@ Be concise and actionable. When asked for recommendations, be specific about whi
       <style>{`
         @keyframes spin{to{transform:rotate(360deg)}}
         @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
-        *{box-sizing:border-box}
-        body{margin:0;background:${C.bg}}
-        textarea:focus,input:focus{border-color:${C.amber}!important;box-shadow:0 0 0 3px rgba(100,24,51,0.14)!important;outline:none}
-        button{transition:all 0.15s}
-        button:hover{opacity:0.9}
-        ::-webkit-scrollbar{width:6px;height:6px}
-        ::-webkit-scrollbar-track{background:${C.bg}}
-        ::-webkit-scrollbar-thumb{background:#c9bfae;border-radius:3px}
-        .nav-link-btn:hover{color:${C.amber}!important}
+        body{background:${C.bg}}
+
+        /* Focused fields get a burgundy ring instead of the browser default.
+           !important because the inputs carry inline border styles. */
+        textarea:focus,input:focus,select:focus{border-color:${C.burgundy}!important;box-shadow:0 0 0 3px rgba(100,24,51,0.13)!important;outline:none}
+        input::placeholder,textarea::placeholder{color:${C.subtle}}
+
+        /* Scoped to :not(:disabled) — the old blanket "opacity:0.9 on any
+           hover" also faded disabled buttons, making them look clickable. */
+        button{transition:filter 0.15s, box-shadow 0.15s, transform 0.1s, background 0.15s, color 0.15s, border-color 0.15s}
+        button:not(:disabled){cursor:pointer}
+        button:not(:disabled):hover{filter:brightness(1.07) saturate(1.03)}
+        button:not(:disabled):active{transform:translateY(1px)}
+        button:disabled{cursor:not-allowed}
+
+        ::selection{background:rgba(100,24,51,0.16)}
+
+        ::-webkit-scrollbar{width:9px;height:9px}
+        ::-webkit-scrollbar-track{background:transparent}
+        ::-webkit-scrollbar-thumb{background:${C.borderStrong};border-radius:${R.pill}px;border:2px solid ${C.bg}}
+        ::-webkit-scrollbar-thumb:hover{background:${C.subtle}}
+
+        .nav-link-btn:hover{color:${C.burgundy}!important;background:rgba(100,24,51,0.055)!important}
+
+        /* Leaflet ships its own typography and a grey placeholder background —
+           pull both onto the app's. */
+        .leaflet-container{font-family:inherit;background:${C.surfaceLight}}
+        .leaflet-control-attribution{font-size:10px;background:rgba(255,255,255,0.82)}
+        .leaflet-control-attribution a{color:${C.muted}}
+        .leaflet-bar a{color:${C.navy}}
+        .leaflet-tooltip{font-size:12px;font-weight:600;border-color:${C.border}}
+
+        @media (prefers-reduced-motion: reduce){
+          *{animation-duration:0.01ms!important;animation-iteration-count:1!important;transition-duration:0.01ms!important}
+        }
       `}</style>
 
       {/* ── TOP HEADER — white, full width, like bdrint.ca ── */}
-      <header style={{ background:"#fff", borderBottom:`3px solid ${C.navy}`, boxShadow:"0 2px 8px rgba(0,0,0,0.06)", position:"sticky", top:0, zIndex:100 }}>
+      <header style={{ background:"#fff", borderBottom:`3px solid ${C.navy}`, boxShadow:S.md, position:"sticky", top:0, zIndex:100 }}>
         {/* Top utility bar */}
-        <div style={{ background:C.amber, padding:"5px 32px" }}>
-          <div style={{ maxWidth:1400, margin:"0 auto", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-            <span style={{ fontSize:11, color:"rgba(255,255,255,0.85)", letterSpacing:"0.05em" }}>Transportation Specialists · Aylmer, ON · Est. 1989</span>
-            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-              <span style={{ fontSize:11, color:"rgba(255,255,255,0.85)" }}>2026 Rate Sheet &nbsp;·&nbsp; ON &amp; QC → US</span>
+        <div style={{ background:C.burgundy, padding:"7px 32px" }}>
+          <div style={{ maxWidth:1400, margin:"0 auto", display:"flex", justifyContent:"space-between", alignItems:"center", gap:16, flexWrap:"wrap" }}>
+            <span style={{ fontSize:11, color:"rgba(255,255,255,0.88)", letterSpacing:"0.05em" }}>Transportation Specialists · Aylmer, ON · Est. 1989</span>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ fontSize:11, color:"rgba(255,255,255,0.88)" }}>2026 Rate Sheet &nbsp;·&nbsp; ON &amp; QC → US</span>
               <button onClick={async () => {
                 const { keys } = await window.storage.list("bdr_");
                 const data = {};
@@ -1803,10 +2086,10 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                 const a = document.createElement("a"); a.href = url;
                 a.download = `bdr-backup-${new Date().toISOString().slice(0,10)}.json`;
                 a.click(); URL.revokeObjectURL(url);
-              }} style={{ fontSize:11, padding:"2px 8px", background:"rgba(255,255,255,0.2)", color:"#fff", border:"1px solid rgba(255,255,255,0.4)", borderRadius:4, cursor:"pointer" }}>
+              }} style={{ fontSize:11, fontWeight:600, padding:"3px 10px", background:"rgba(255,255,255,0.16)", color:"#fff", border:"1px solid rgba(255,255,255,0.32)", borderRadius:R.sm, cursor:"pointer" }}>
                 ⬇ Export
               </button>
-              <label style={{ fontSize:11, padding:"2px 8px", background:"rgba(255,255,255,0.2)", color:"#fff", border:"1px solid rgba(255,255,255,0.4)", borderRadius:4, cursor:"pointer" }}>
+              <label style={{ fontSize:11, fontWeight:600, padding:"3px 10px", background:"rgba(255,255,255,0.16)", color:"#fff", border:"1px solid rgba(255,255,255,0.32)", borderRadius:R.sm, cursor:"pointer" }}>
                 ⬆ Import
                 <input type="file" accept=".json" style={{ display:"none" }} onChange={async (e) => {
                   const file = e.target.files?.[0]; if (!file) return;
@@ -1828,11 +2111,12 @@ Be concise and actionable. When asked for recommendations, be specific about whi
             {[["quote","Quote"],["history","History"]].map(([t,l]) => (
               <button key={t} onClick={()=>setTab(t)} className="nav-link-btn" style={{
                 padding:"8px 20px", background:"none", border:"none",
-                borderBottom: tab===t ? `3px solid ${C.amber}` : "3px solid transparent",
-                color: tab===t ? C.amber : C.navy,
+                borderBottom: tab===t ? `3px solid ${C.burgundy}` : "3px solid transparent",
+                borderTopLeftRadius:R.sm, borderTopRightRadius:R.sm,
+                color: tab===t ? C.burgundy : C.navy,
                 fontSize:15, fontWeight: tab===t ? 700 : 500,
                 cursor:"pointer", letterSpacing:"0.01em",
-                transition:"all 0.15s", marginBottom:-1,
+                marginBottom:-1,
               }}>{l}</button>
             ))}
             <div style={{ width:1, height:24, background:C.border, margin:"0 8px" }}/>
@@ -1868,7 +2152,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                 <input value={histSearch} onChange={e=>setHistSearch(e.target.value)} placeholder={historyView==="customers" ? "Search customer, email…" : "Search broker, city, state…"}
                   style={{ ...input, width:220, fontSize:14 }}/>
               )}
-              <div style={{ display:"flex", border:`1.5px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
+              <div style={{ display:"flex", border:`1px solid ${C.border}`, borderRadius:R.md, overflow:"hidden" }}>
                 {[["quotes","📋 Quotes"],["pipeline","📦 Pipeline"],["customers","👥 Customers"]].map(([v,l]) => (
                   <button key={v} onClick={()=>setHistoryView(v)}
                     style={{ padding:"8px 18px", fontSize:13, fontWeight:historyView===v?700:400, background:historyView===v?C.navy:"#fff", color:historyView===v?"#fff":C.muted, border:"none", cursor:"pointer" }}>
@@ -1909,7 +2193,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                 {counters.length > 0 && (
                   <div style={{ marginBottom:20 }}>
                     <div style={{ fontSize:13, fontWeight:700, color:"#b45309", marginBottom:8, textTransform:"uppercase", letterSpacing:"0.05em", display:"flex", alignItems:"center", gap:8 }}>
-                      <span style={{ background:"#b45309", color:"#fff", borderRadius:99, width:20, height:20, display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:800 }}>{counters.length}</span>
+                      <span style={{ background:"#b45309", color:"#fff", borderRadius:R.pill, width:20, height:20, display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:800 }}>{counters.length}</span>
                       Counter Offers Pending
                     </div>
                     {counters.map(q => (
@@ -1936,11 +2220,11 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         )}
                         <div style={{ padding:"12px 18px", display:"flex", gap:10, alignItems:"center", flexWrap:"wrap", background:"#fff" }}>
                           <button onClick={()=>respondToCounter(q,"accept")}
-                            style={{ padding:"8px 18px", fontSize:13, fontWeight:700, borderRadius:6, cursor:"pointer", background:C.green, color:"#fff", border:"none" }}>
+                            style={{ padding:"8px 18px", fontSize:13, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:C.green, color:"#fff", border:"none" }}>
                             ✓ Accept ${q.counter_offer}
                           </button>
                           <button onClick={()=>respondToCounter(q,"decline")}
-                            style={{ padding:"8px 18px", fontSize:13, fontWeight:700, borderRadius:6, cursor:"pointer", background:"#fff", color:C.error, border:`1.5px solid #fca5a5` }}>
+                            style={{ padding:"8px 18px", fontSize:13, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:"#fff", color:C.error, border:`1px solid #fca5a5` }}>
                             ✗ Decline
                           </button>
                           <div style={{ display:"flex", gap:6, alignItems:"center", marginLeft:"auto" }}>
@@ -1959,7 +2243,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                                 respondToCounter(q, "counter", parseFloat(counterInputs[q.timestamp]));
                                 setCounterInputs(prev => { const n={...prev}; delete n[q.timestamp]; return n; });
                               }}
-                              style={{ padding:"7px 14px", fontSize:13, fontWeight:700, borderRadius:6, cursor:"pointer", background:"#f59e0b", color:"#fff", border:"none", opacity:counterInputs[q.timestamp]?1:0.4 }}>
+                              style={{ padding:"7px 14px", fontSize:13, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:"#f59e0b", color:"#fff", border:"none", opacity:counterInputs[q.timestamp]?1:0.4 }}>
                               Send Counter
                             </button>
                           </div>
@@ -1980,7 +2264,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <>
                     <div style={{ fontSize:13, fontWeight:700, color:C.navy, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.05em" }}>Confirmed Orders</div>
                     {received.map(q => (
-                      <div key={q.timestamp} style={{ ...card, padding:0, overflow:"hidden", marginBottom:8, border:`1.5px solid #bbf7d0` }}>
+                      <div key={q.timestamp} style={{ ...card, padding:0, overflow:"hidden", marginBottom:8, border:`1px solid #bbf7d0` }}>
                         <div style={{ display:"flex", alignItems:"stretch" }}>
                           <div style={{ width:5, background:C.green, flexShrink:0 }}/>
                           <div style={{ flex:1, padding:"12px 18px", display:"flex", alignItems:"center", gap:20, flexWrap:"wrap" }}>
@@ -2008,7 +2292,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                           </div>
                           <div style={{ display:"flex", alignItems:"center", padding:"0 16px", borderLeft:`1px solid ${C.border}` }}>
                             <button onClick={()=>updateQuoteOutcome(q.timestamp,"pending")}
-                              style={{ padding:"6px 14px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#efe8dc", color:C.muted, border:`1px solid ${C.border}` }}>
+                              style={{ padding:"6px 14px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:C.surface, color:C.muted, border:`1px solid ${C.border}` }}>
                               Undo
                             </button>
                           </div>
@@ -2025,7 +2309,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     {pending.map(q => (
                       <div key={q.timestamp} style={{ ...card, padding:0, overflow:"hidden", marginBottom:8 }}>
                         <div style={{ display:"flex", alignItems:"stretch" }}>
-                          <div style={{ width:5, background:q.outcome==="waiting" ? "#fed7aa" : q.outcome==="broker_sending" ? "#ddd6fe" : "#e7dfd2", flexShrink:0 }}/>
+                          <div style={{ width:5, background:q.outcome==="waiting" ? "#fed7aa" : q.outcome==="broker_sending" ? "#ddd6fe" : C.border, flexShrink:0 }}/>
                           <div style={{ flex:1, padding:"10px 18px", display:"flex", alignItems:"center", gap:16, flexWrap:"wrap" }}>
                             <div style={{ minWidth:80, fontSize:12, color:C.muted }}>{q.date}</div>
                             <div style={{ minWidth:140, fontSize:13, fontWeight:600 }}>{q.broker_name} {q.broker_company ? <span style={{ fontWeight:400, color:C.muted }}>· {q.broker_company}</span> : ""}</div>
@@ -2033,32 +2317,32 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                             <div style={{ minWidth:50, fontSize:13, color:C.muted }}>{q.skids} skids</div>
                             <div style={{ minWidth:70, fontSize:15, fontWeight:700, color:C.amber }}>${r5(q.total)}</div>
                             {q.outcome === "broker_sending" && (
-                              <span style={{ fontSize:11, fontWeight:700, color:"#7c3aed", background:"#f5f3ff", padding:"2px 8px", borderRadius:10, border:`1px solid #ddd6fe` }}>📬 Broker Sending</span>
+                              <span style={{ fontSize:11, fontWeight:700, color:"#7c3aed", background:"#f5f3ff", padding:"2px 8px", borderRadius:R.pill, border:`1px solid #ddd6fe` }}>📬 Broker Sending</span>
                             )}
                           </div>
                           <div style={{ display:"flex", gap:6, alignItems:"center", padding:"0 14px", borderLeft:`1px solid ${C.border}` }}>
                             <button onClick={()=>updateQuoteOutcome(q.timestamp,"received")}
-                              style={{ padding:"6px 12px", fontSize:12, fontWeight:700, borderRadius:6, cursor:"pointer", background:C.green, color:"#fff", border:"none" }}>
+                              style={{ padding:"6px 12px", fontSize:12, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:C.green, color:"#fff", border:"none" }}>
                               ✓ Received
                             </button>
                             {q.outcome !== "waiting" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"waiting")}
-                                style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#fff7ed", color:"#c2410c", border:`1px solid #fed7aa` }}>
+                                style={{ padding:"6px 12px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:"#fff7ed", color:"#c2410c", border:`1px solid #fed7aa` }}>
                                 ⏳ Waiting
                               </button>
                             )}
                             {q.outcome !== "broker_sending" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"broker_sending")}
-                                style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f5f3ff", color:"#7c3aed", border:`1px solid #ddd6fe` }}>
+                                style={{ padding:"6px 12px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:"#f5f3ff", color:"#7c3aed", border:`1px solid #ddd6fe` }}>
                                 📬 Broker Sending
                               </button>
                             )}
                             <button onClick={()=>updateQuoteOutcome(q.timestamp,"lost")}
-                              style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#fff", color:C.error, border:`1px solid #fca5a5` }}>
+                              style={{ padding:"6px 12px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:"#fff", color:C.error, border:`1px solid #fca5a5` }}>
                               ✗ Lost
                             </button>
                             <button onClick={()=>updateQuoteOutcome(q.timestamp,"declined")}
-                              style={{ padding:"6px 12px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f7f4ee", color:"#6b7280", border:`1px solid #d9d0c2` }}>
+                              style={{ padding:"6px 12px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:C.surfaceLight, color:"#6b7280", border:`1px solid ${C.borderStrong}` }}>
                               ✗ Decline
                             </button>
                           </div>
@@ -2080,7 +2364,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       </div>
                     ) : (
                       sentLoads.map(q => (
-                        <div key={q.timestamp} style={{ ...card, padding:0, overflow:"hidden", marginBottom:8, border:"1.5px solid #bae6fd" }}>
+                        <div key={q.timestamp} style={{ ...card, padding:0, overflow:"hidden", marginBottom:8, border:"1px solid #bae6fd" }}>
                           <div style={{ display:"flex", alignItems:"stretch" }}>
                             <div style={{ width:5, background:"#0ea5e9", flexShrink:0 }}/>
                             <div style={{ flex:1, padding:"12px 18px", display:"flex", alignItems:"center", gap:20, flexWrap:"wrap" }}>
@@ -2191,7 +2475,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                             <div style={{ fontSize:13, color:C.text }}>{b.last_quote_at ? new Date(b.last_quote_at).toLocaleDateString("en-CA") : "—"}</div>
                           </div>
                           <button onClick={()=>setExpandedBroker(isOpen ? null : b.id)}
-                            style={{ marginLeft:"auto", padding:"6px 14px", fontSize:12, fontWeight:600, borderRadius:6, cursor:"pointer", background:"#efe8dc", color:C.navy, border:`1px solid ${C.border}` }}>
+                            style={{ marginLeft:"auto", padding:"6px 14px", fontSize:12, fontWeight:600, borderRadius:R.md, cursor:"pointer", background:C.surface, color:C.navy, border:`1px solid ${C.border}` }}>
                             {isOpen ? "▲ Hide" : `▼ View ${brokerQuotes.length} quote${brokerQuotes.length!==1?"s":""}`}
                           </button>
                         </div>
@@ -2233,7 +2517,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                 })
                 .map(q => {
                   const outcomeColor = q.outcome==="accepted" ? "#0369a1" : q.outcome==="received" ? C.green : q.outcome==="lost" ? C.error : q.outcome==="waiting" ? "#c2410c" : q.outcome==="broker_sending" ? "#7c3aed" : q.outcome==="declined" ? "#6b7280" : C.amber;
-                  const outcomeBg    = q.outcome==="accepted" ? "#eff6ff" : q.outcome==="received" ? "#f0fdf4" : q.outcome==="lost" ? "#fef2f2" : q.outcome==="waiting" ? "#fff7ed" : q.outcome==="broker_sending" ? "#f5f3ff" : q.outcome==="declined" ? "#f7f4ee" : C.card;
+                  const outcomeBg    = q.outcome==="accepted" ? "#eff6ff" : q.outcome==="received" ? "#f0fdf4" : q.outcome==="lost" ? "#fef2f2" : q.outcome==="waiting" ? "#fff7ed" : q.outcome==="broker_sending" ? "#f5f3ff" : q.outcome==="declined" ? C.surfaceLight : C.card;
                   return (
                     <div key={q.timestamp} style={{ ...card, marginBottom:10, padding:0, overflow:"hidden", background:outcomeBg }}>
                       <div style={{ display:"flex", alignItems:"stretch" }}>
@@ -2267,37 +2551,37 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                           <div style={{ display:"flex", gap:5, marginLeft:"auto" }}>
                             {q.outcome !== "received" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"received")}
-                                style={{ padding:"5px 11px", fontSize:12, fontWeight:700, borderRadius:6, cursor:"pointer", background:C.green, color:"#fff", border:"none" }}>
+                                style={{ padding:"5px 11px", fontSize:12, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:C.green, color:"#fff", border:"none" }}>
                                 ✓ Received
                               </button>
                             )}
                             {q.outcome !== "waiting" && q.outcome !== "received" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"waiting")}
-                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#fff7ed", color:"#c2410c", border:`1px solid #fed7aa` }}>
+                                style={{ padding:"5px 11px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:"#fff7ed", color:"#c2410c", border:`1px solid #fed7aa` }}>
                                 ⏳ Waiting
                               </button>
                             )}
                             {q.outcome !== "broker_sending" && q.outcome !== "received" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"broker_sending")}
-                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f5f3ff", color:"#7c3aed", border:`1px solid #ddd6fe` }}>
+                                style={{ padding:"5px 11px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:"#f5f3ff", color:"#7c3aed", border:`1px solid #ddd6fe` }}>
                                 📬 Broker Sending
                               </button>
                             )}
                             {q.outcome !== "lost" && q.outcome !== "received" && q.outcome !== "declined" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"lost")}
-                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#fff", color:C.error, border:`1px solid #fca5a5` }}>
+                                style={{ padding:"5px 11px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:"#fff", color:C.error, border:`1px solid #fca5a5` }}>
                                 ✗ Lost
                               </button>
                             )}
                             {q.outcome !== "declined" && q.outcome !== "received" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"declined")}
-                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#f7f4ee", color:"#6b7280", border:`1px solid #d9d0c2` }}>
+                                style={{ padding:"5px 11px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:C.surfaceLight, color:"#6b7280", border:`1px solid ${C.borderStrong}` }}>
                                 ✗ Decline
                               </button>
                             )}
                             {q.outcome !== "waiting" && (
                               <button onClick={()=>updateQuoteOutcome(q.timestamp,"waiting")}
-                                style={{ padding:"5px 11px", fontSize:12, borderRadius:6, cursor:"pointer", background:"#efe8dc", color:C.muted, border:`1px solid ${C.border}` }}>
+                                style={{ padding:"5px 11px", fontSize:12, borderRadius:R.md, cursor:"pointer", background:C.surface, color:C.muted, border:`1px solid ${C.border}` }}>
                                 Reset
                               </button>
                             )}
@@ -2318,7 +2602,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         <div style={{ borderTop:`1px solid ${C.border}`, padding:"16px 22px", background:"#fafafa" }}>
                           <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:8 }}>
                             <button onClick={()=>{ const ta=document.createElement("textarea"); ta.value=q.quote_text; ta.style.position="fixed"; ta.style.top="0"; ta.style.left="0"; ta.style.width="2em"; ta.style.height="2em"; ta.style.opacity="0"; document.body.appendChild(ta); ta.focus(); ta.select(); try{document.execCommand("copy");}catch(e){} document.body.removeChild(ta); }}
-                              style={{ padding:"6px 16px", background:C.amber, color:"#fff", border:"none", borderRadius:6, fontSize:13, fontWeight:600, cursor:"pointer" }}>
+                              style={{ padding:"6px 16px", background:C.amber, color:"#fff", border:"none", borderRadius:R.md, fontSize:13, fontWeight:600, cursor:"pointer" }}>
                               Copy Quote
                             </button>
                           </div>
@@ -2341,8 +2625,8 @@ Be concise and actionable. When asked for recommendations, be specific about whi
       ) : (
       <>
       {/* ── Step bar ── */}
-      <div style={{ background:"#fff", borderBottom:`1px solid ${C.border}`, boxShadow:"0 1px 3px rgba(0,0,0,0.05)" }}>
-        <div style={{ maxWidth:1400, margin:"0 auto", padding:"14px 32px", display:"flex", gap:28, alignItems:"center" }}>
+      <div style={{ background:"#fff", borderBottom:`1px solid ${C.border}`, boxShadow:S.sm }}>
+        <div style={{ maxWidth:1400, margin:"0 auto", padding:"16px 32px", display:"flex", gap:28, alignItems:"center" }}>
           <Step n="1" label="Paste Email"    active={step==="input"}  done={step!=="input"} />
           <div style={{ flex:1, height:1, background:C.border }}/>
           <Step n="2" label="Review & Rate"  active={step==="review"} done={step==="result"} />
@@ -2385,7 +2669,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <input type="file" accept="application/pdf" style={{ display:"none" }}
                     onChange={e => { if (e.target.files[0]) handlePDFUpload(e.target.files[0]); e.target.value=""; }}
                   />
-                  <div style={{ border:`2px dashed ${pdfLoading?C.amber:"#e3c9d1"}`, borderRadius:10, padding:"18px 20px", background:pdfLoading?C.amberLight:"#f7f4ee",
+                  <div style={{ border:`2px dashed ${pdfLoading?C.burgundy:"#e3c9d1"}`, borderRadius:R.lg, padding:"18px 20px", background:pdfLoading?C.burgundyLight:C.surfaceLight,
                     display:"flex", alignItems:"center", gap:14, transition:"all 0.2s" }}>
                     <div style={{ fontSize:28, lineHeight:1 }}>{pdfLoading ? "⏳" : "📄"}</div>
                     <div>
@@ -2396,7 +2680,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         {pdfLoading ? "Claude is extracting shipment details" : "Click to browse or drop a file — Claude reads it automatically"}
                       </div>
                     </div>
-                    {!pdfLoading && <div style={{ marginLeft:"auto", padding:"6px 16px", background:C.amber, color:"#fff", borderRadius:7, fontSize:12, fontWeight:700 }}>Browse</div>}
+                    {!pdfLoading && <div style={{ marginLeft:"auto", padding:"6px 16px", background:C.burgundy, color:"#fff", borderRadius:R.sm, fontSize:12, fontWeight:700 }}>Browse</div>}
                   </div>
                 </label>
 
@@ -2410,9 +2694,9 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   placeholder={"Example:\n\nHi, looking for a rate from Ontario to Dayton, OH.\n5 skids, approximately 8,500 lbs.\nPickup June 23rd. Commodity: auto parts.\n\nPlease advise. Thanks"}
                   style={{ ...input, height:160, resize:"vertical", lineHeight:1.6, fontSize:14 }}
                 />
-                {error && <div style={{ marginTop:10, padding:"10px 14px", background:C.errorLight, border:`1px solid #fca5a5`, borderRadius:8, color:C.error, fontSize:14 }}>⚠ {error}</div>}
+                {error && <div style={{ marginTop:10, padding:"10px 14px", background:C.errorLight, border:`1px solid #fca5a5`, borderRadius:R.md, color:C.error, fontSize:14 }}>⚠ {error}</div>}
                 <button onClick={handleParse} disabled={loading||!email.trim()}
-                  style={{ marginTop:14, padding:"12px 28px", background:loading||!email.trim()?"#d9d0c2":C.amber, color:"#fff", border:"none", borderRadius:8, fontSize:15, fontWeight:700, cursor:loading||!email.trim()?"not-allowed":"pointer", display:"flex", alignItems:"center", gap:8 }}>
+                  style={{ marginTop:14, padding:"12px 28px", background:loading||!email.trim()?C.borderStrong:C.amber, color:"#fff", border:"none", borderRadius:R.md, fontSize:15, fontWeight:700, cursor:loading||!email.trim()?"not-allowed":"pointer", display:"flex", alignItems:"center", gap:8 }}>
                   {loading ? <><span style={{ display:"inline-block", animation:"spin 0.8s linear infinite" }}>⟳</span> Parsing email…</> : "Parse Email →"}
                 </button>
               </div>
@@ -2428,7 +2712,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   {Object.entries(
                     cities.reduce((acc, c) => { (acc[c.state] ||= []).push(c.city); return acc; }, {})
                   ).sort(([a],[b]) => a.localeCompare(b)).map(([st, citiesForState]) => (
-                    <div key={st} style={{ background:"#fff", borderRadius:8, padding:"10px 12px", border:`1px solid #e8b4be` }}>
+                    <div key={st} style={{ background:"#fff", borderRadius:R.md, padding:"10px 12px", border:`1px solid #e8b4be` }}>
                       <div style={{ fontSize:18, fontWeight:800, color:C.amber, marginBottom:2 }}>{st}</div>
                       <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{citiesForState.sort().join(" · ")}</div>
                     </div>
@@ -2456,10 +2740,10 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     setAccs(accsFromParsed(s.accessorials));
                     setQuoteText(quoteTexts[i] || "");
                   }} style={{
-                    padding:"8px 16px", borderRadius:8, cursor:"pointer", fontSize:13, fontWeight:activeIdx===i?700:400,
-                    background: activeIdx===i ? C.navy : "#efe8dc",
+                    padding:"8px 16px", borderRadius:R.md, cursor:"pointer", fontSize:13, fontWeight:activeIdx===i?700:400,
+                    background: activeIdx===i ? C.navy : C.surface,
                     color: activeIdx===i ? "#fff" : C.muted,
-                    border: `1.5px solid ${activeIdx===i ? C.navy : C.border}`,
+                    border: `1px solid ${activeIdx===i ? C.navy : C.border}`,
                     display:"flex", alignItems:"center", gap:8,
                   }}>
                     <span>Shipment {i+1}</span>
@@ -2489,7 +2773,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                 <div style={card}>
                   <div style={{ fontSize:16, fontWeight:700, color:C.navy, marginBottom:16 }}>Shipment Details</div>
                   {parsed.missing_info?.length > 0 && (
-                    <div style={{ padding:"10px 14px", background:"#fffbeb", border:`1px solid #fcd34d`, borderRadius:8, color:"#92400e", fontSize:14, marginBottom:14 }}>
+                    <div style={{ padding:"10px 14px", background:"#fffbeb", border:`1px solid #fcd34d`, borderRadius:R.md, color:"#92400e", fontSize:14, marginBottom:14 }}>
                       ⚠ Missing information: {parsed.missing_info.join(", ")}
                     </div>
                   )}
@@ -2512,10 +2796,10 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       {DIRECTION_OPTS.map(o => (
                         <button key={o.v} onClick={()=>handleFieldChange("direction",o.v,parsed)} style={{
                           flex:1, padding:"9px 14px", fontSize:13, fontWeight:(parsed.direction||"outbound")===o.v?700:400,
-                          borderRadius:8, cursor:"pointer",
-                          background:(parsed.direction||"outbound")===o.v?C.navy:"#efe8dc",
+                          borderRadius:R.md, cursor:"pointer",
+                          background:(parsed.direction||"outbound")===o.v?C.navy:C.surface,
                           color:(parsed.direction||"outbound")===o.v?"#fff":C.text,
-                          border:`1.5px solid ${(parsed.direction||"outbound")===o.v?C.navy:C.border}`,
+                          border:`1px solid ${(parsed.direction||"outbound")===o.v?C.navy:C.border}`,
                         }}>{o.l}</button>
                       ))}
                     </div>
@@ -2528,7 +2812,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       <button onClick={() => {
                         const items = [...(parsed.line_items||[]), { skids:1, dim_l:48, dim_w:48, dim_h:48, stack_height:null }];
                         handleFieldChange("line_items", items, parsed);
-                      }} style={{ fontSize:12, padding:"4px 12px", background:C.navy, color:"#fff", border:"none", borderRadius:6, cursor:"pointer" }}>+ Add line</button>
+                      }} style={{ fontSize:12, padding:"4px 12px", background:C.navy, color:"#fff", border:"none", borderRadius:R.md, cursor:"pointer" }}>+ Add line</button>
                     </div>
                     <div style={{ fontSize:12, color:C.muted, marginBottom:12 }}>
                       W &lt; 32": ÷ 36 (3 across) &nbsp;|&nbsp; W ≤ 48": ÷ 24 (2 across) &nbsp;|&nbsp; W &gt; 48": ÷ 12 (1 across) &nbsp;|&nbsp; Stackable ÷ stack height
@@ -2539,7 +2823,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       <div style={{ overflowX:"auto", marginBottom:12 }}>
                         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
                           <thead>
-                            <tr style={{ background:"#efe8dc" }}>
+                            <tr style={{ background:C.surface }}>
                               {["Skids","L (in)","W (in)","H (in)","Stack high","Divisor","Raw ft","Net ft"].map(h => (
                                 <th key={h} style={{ padding:"7px 10px", textAlign:"center", fontWeight:600, color:C.muted, border:`1px solid ${C.border}`, whiteSpace:"nowrap" }}>{h}</th>
                               ))}
@@ -2579,7 +2863,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                             const db = calcDimBasis(parsed.line_items);
                             return db ? (
                               <tfoot>
-                                <tr style={{ background: rateResult?.basisLabel==="dimensions" ? C.amberLight : "#f7f4ee" }}>
+                                <tr style={{ background: rateResult?.basisLabel==="dimensions" ? C.amberLight : C.surfaceLight }}>
                                   <td colSpan={6} style={{ padding:"7px 10px", border:`1px solid ${C.border}`, fontWeight:600, color:C.muted, textAlign:"right" }}>Total</td>
                                   <td style={{ padding:"7px 10px", border:`1px solid ${C.border}`, fontWeight:700, color:C.navy, textAlign:"center" }}>{db.totalFt} ft</td>
                                   <td style={{ padding:"7px 10px", border:`1px solid ${C.border}`, fontWeight:700, color:C.amber, textAlign:"center" }}>{db.effSkids} eff. skids</td>
@@ -2593,7 +2877,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     )}
 
                     {parsed.line_items?.some(li => calcLineItem(li.skids, li.dim_l, li.dim_w, li.dim_h, li.stack_height)?.swapped) && (
-                      <div style={{ marginBottom:12, padding:"10px 14px", background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:8, color:"#c2410c", fontSize:12 }}>
+                      <div style={{ marginBottom:12, padding:"10px 14px", background:"#fff7ed", border:"1px solid #fed7aa", borderRadius:R.md, color:"#c2410c", fontSize:12 }}>
                         A trailer is only about {MAX_TRAILER_WIDTH_IN}" wide — one or more highlighted line items gave a "W" bigger than that, so L/W were auto-swapped for this rate (shown above). Confirm with the customer whether they're giving dimensions as L×W×H or W×L×H before quoting off this.
                       </div>
                     )}
@@ -2602,7 +2886,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     {parsed.line_items?.length === 1 && (() => {
                       const db = calcDimBasis(parsed.line_items);
                       return db ? (
-                        <div style={{ padding:"9px 14px", background: rateResult?.basisLabel==="dimensions" ? C.amberLight : "#f7f4ee", border:`1px solid ${rateResult?.basisLabel==="dimensions" ? C.amber : C.border}`, borderRadius:8, fontSize:13 }}>
+                        <div style={{ padding:"9px 14px", background: rateResult?.basisLabel==="dimensions" ? C.amberLight : C.surfaceLight, border:`1px solid ${rateResult?.basisLabel==="dimensions" ? C.amber : C.border}`, borderRadius:R.md, fontSize:13 }}>
                           <span style={{ fontWeight:600, color: rateResult?.basisLabel==="dimensions" ? C.amber : C.muted }}>📐 </span>
                           ({db.lines[0].L}" × {db.lines[0].skids} skids) ÷ {db.lines[0].divisor}{db.lines[0].stackH > 1 ? ` ÷ ${db.lines[0].stackH} (stack)` : ""} = <strong>{db.totalFt} ft → {db.effSkids} effective skids</strong>
                           {rateResult?.basisLabel==="dimensions" ? <span style={{ color:C.amber }}> ← charging this</span> : <span style={{ color:C.subtle }}> (skid count or weight is higher)</span>}
@@ -2626,7 +2910,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       <button onClick={() => {
                         const stops = [...(parsed.additional_pickups||[]), { location:"", lat:null, lon:null }];
                         handleFieldChange("additional_pickups", stops, parsed);
-                      }} style={{ fontSize:12, padding:"4px 12px", background:C.navy, color:"#fff", border:"none", borderRadius:6, cursor:"pointer" }}>+ Add</button>
+                      }} style={{ fontSize:12, padding:"4px 12px", background:C.navy, color:"#fff", border:"none", borderRadius:R.md, cursor:"pointer" }}>+ Add</button>
                     </div>
                     {(parsed.additional_pickups||[]).map((s,i) => {
                       const sc = stopCharge(s.lat, s.lon, parsed.pickup_lat, parsed.pickup_lon);
@@ -2638,7 +2922,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                               handleFieldChange("additional_pickups", stops, parsed);
                             }}
                             style={{ ...input, flex:1 }}/>
-                          <div style={{ minWidth:120, padding:"10px 12px", background: sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amberLight : "#f0fdf4", border:`1px solid ${sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amber : "#86efac"}`, borderRadius:8, fontSize:13, fontWeight:700, color: sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amber : C.green, textAlign:"center" }}>
+                          <div style={{ minWidth:120, padding:"10px 12px", background: sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amberLight : "#f0fdf4", border:`1px solid ${sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amber : "#86efac"}`, borderRadius:R.md, fontSize:13, fontWeight:700, color: sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amber : C.green, textAlign:"center" }}>
                             ${sc.charge}{sc.km!=null ? ` (${sc.km}km)` : ""}
                           </div>
                           <button onClick={() => {
@@ -2658,7 +2942,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                       <button onClick={() => {
                         const stops = [...(parsed.additional_deliveries||[]), { location:"", lat:null, lon:null }];
                         handleFieldChange("additional_deliveries", stops, parsed);
-                      }} style={{ fontSize:12, padding:"4px 12px", background:C.navy, color:"#fff", border:"none", borderRadius:6, cursor:"pointer" }}>+ Add</button>
+                      }} style={{ fontSize:12, padding:"4px 12px", background:C.navy, color:"#fff", border:"none", borderRadius:R.md, cursor:"pointer" }}>+ Add</button>
                     </div>
                     {(parsed.additional_deliveries||[]).map((s,i) => {
                       const sc = stopCharge(s.lat, s.lon, parsed.dest_lat, parsed.dest_lon);
@@ -2670,7 +2954,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                               handleFieldChange("additional_deliveries", stops, parsed);
                             }}
                             style={{ ...input, flex:1 }}/>
-                          <div style={{ minWidth:120, padding:"10px 12px", background: sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amberLight : "#f0fdf4", border:`1px solid ${sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amber : "#86efac"}`, borderRadius:8, fontSize:13, fontWeight:700, color: sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amber : C.green, textAlign:"center" }}>
+                          <div style={{ minWidth:120, padding:"10px 12px", background: sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amberLight : "#f0fdf4", border:`1px solid ${sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amber : "#86efac"}`, borderRadius:R.md, fontSize:13, fontWeight:700, color: sc.km!=null&&sc.km>STOP_RADIUS_KM ? C.amber : C.green, textAlign:"center" }}>
                             ${sc.charge}{sc.km!=null ? ` (${sc.km}km)` : ""}
                           </div>
                           <button onClick={() => {
@@ -2694,38 +2978,40 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     <span style={{ fontSize:15 }}>Looking up coordinates for {parsed.dest_city}…</span>
                   </div>
                 ) : base ? (
-                  <div style={{ background:C.navy, borderRadius:12, padding:24, marginBottom:16 }}>
+                  <div style={{ background:C.navy, borderRadius:R.lg, padding:24, marginBottom:16, boxShadow:S.lg }}>
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20, marginBottom: rateResult?.basisLabel === "weight" ? 16 : 0 }}>
                       <div>
-                        <div style={{ fontSize:11, color:"#aaa", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Rate Point</div>
+                        <div style={{ fontSize:11, color:C.onNavyMuted, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Rate Point</div>
                         <div style={{ fontSize:16, color:"#fff", fontWeight:700 }}>{rateCity?.city}, {rateCity?.state}</div>
-                        {isNearest && <div style={{ fontSize:11, color:"#aaa", marginTop:2 }}>Nearest to {parsed.dest_city} ({rateCity?.distance} mi)</div>}
+                        {isNearest && <div style={{ fontSize:11, color:C.onNavyMuted, marginTop:2 }}>Nearest to {parsed.dest_city} ({rateCity?.distance} mi)</div>}
                         {rateResult?.zonePct > 0 && (
-                          <div style={{ fontSize:11, color:C.amber, marginTop:2, fontWeight:700 }}>
+                          <div style={{ fontSize:11, color:C.accentOnNavy, marginTop:2, fontWeight:700 }}>
                             Zone: {rateResult.zoneTierLabel}
                           </div>
                         )}
                       </div>
                       <div>
-                        <div style={{ fontSize:11, color:"#aaa", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Charged At</div>
+                        <div style={{ fontSize:11, color:C.onNavyMuted, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Charged At</div>
                         <div style={{ fontSize:16, color:"#fff", fontWeight:700 }}>
                           {rateResult?.chargeIdx != null ? SKID_LABELS[rateResult.chargeIdx] : parsed.skids} skids
                         </div>
-                        <div style={{ fontSize:11, color: rateResult?.basisLabel !== "skids" ? C.amber : "#aaa", marginTop:2, fontWeight: rateResult?.basisLabel !== "skids" ? 700 : 400 }}>
+                        <div style={{ fontSize:11, color: rateResult?.basisLabel !== "skids" ? C.accentOnNavy : C.onNavyMuted, marginTop:2, fontWeight: rateResult?.basisLabel !== "skids" ? 700 : 400 }}>
                           Basis: {rateResult?.basisLabel === "weight" ? "⚖ weight" : rateResult?.basisLabel === "dimensions" ? "📐 dimensions" : rateResult?.basisLabel === "footage" ? "📏 footage" : "📦 skids (std 48×40\""}
                         </div>
                       </div>
                       <div>
-                        <div style={{ fontSize:11, color:"#aaa", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Base Rate</div>
+                        <div style={{ fontSize:11, color:C.onNavyMuted, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Base Rate</div>
                         <div style={{ fontSize:16, color:"#fff", fontWeight:700 }}>${base.toFixed(2)}</div>
                       </div>
                       <div>
-                        <div style={{ fontSize:11, color:"#aaa", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Total incl. FSC ({(fsc*100).toFixed(0)}%)</div>
-                        <div style={{ fontSize:28, color:C.amber, fontWeight:800 }}>${total.toFixed(2)}</div>
+                        <div style={{ fontSize:11, color:C.onNavyMuted, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Total incl. FSC ({(fsc*100).toFixed(0)}%)</div>
+                        {/* The hero figure — white for maximum legibility; size and
+                            weight carry the emphasis instead of colour. */}
+                        <div style={{ fontSize:30, color:C.onNavy, fontWeight:800, letterSpacing:"-0.01em" }}>${total.toFixed(2)}</div>
                       </div>
                     </div>
                     {rateResult?.basisLabel !== "skids" && (
-                      <div style={{ background:"rgba(139,28,50,0.25)", border:"1px solid rgba(139,28,50,0.5)", borderRadius:8, padding:"8px 14px", fontSize:13, color:"#ffb3c0" }}>
+                      <div style={{ background:"rgba(139,28,50,0.25)", border:"1px solid rgba(139,28,50,0.5)", borderRadius:R.md, padding:"8px 14px", fontSize:13, color:"#ffb3c0" }}>
                         {rateResult?.basisLabel === "weight" && <>⚖ Weight bump: {parsed.skids} skids stated but {Number(parsed.weight_lbs).toLocaleString()} lbs entered → charged at {SKID_LABELS[rateResult.chargeIdx]} skids</>}
                         {rateResult?.basisLabel === "dimensions" && <>📐 Dimension bump: {rateResult.dimBasis?.lines?.length} line item{rateResult.dimBasis?.lines?.length!==1?"s":""} = {rateResult.dimBasis?.totalFt} ft total → charged at {SKID_LABELS[rateResult.chargeIdx]} skids</>}
                         {rateResult?.basisLabel === "footage" && rateResult?.footageOnly && <>📏 Footage provided: {parsed.footage} ft → charged at {SKID_LABELS[rateResult.chargeIdx]} skids</>}
@@ -2739,6 +3025,19 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   </div>
                 )}
 
+                {/* Lane map — renders itself null until both endpoints have coords */}
+                <LaneMap
+                  pickup={{ lat:parsed.pickup_lat, lon:parsed.pickup_lon, label:parsed.pickup_location || parsed.origin }}
+                  dest={{ lat:parsed.dest_lat, lon:parsed.dest_lon,
+                          label:`${parsed.dest_city || "Destination"}${parsed.dest_state ? `, ${parsed.dest_state}` : ""}` }}
+                  ratePoint={rateCity ? {
+                    lat:rateCity.lat, lon:rateCity.lon,
+                    label:`${rateCity.city}, ${rateCity.state}`,
+                    distance:rateCity.distance,
+                    distinct:!!isNearest,   // hide the pin when the anchor *is* the destination
+                  } : null}
+                />
+
                 {/* Rate table */}
                 {rateResult?.table && (
                   <div style={card}>
@@ -2748,12 +3047,12 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     <div style={{ overflowX:"auto" }}>
                       <table style={{ borderCollapse:"collapse", fontSize:13, width:"100%" }}>
                         <thead>
-                          <tr style={{ background:"#efe8dc" }}>
+                          <tr style={{ background:C.surface }}>
                             {SKID_LABELS.map((l,i) => {
                               const isCharge = i === rateResult.chargeIdx;
                               const isSkid   = i === rateResult.skidIdx && rateResult.skidIdx !== rateResult.chargeIdx;
                               return <th key={l} style={{ padding:"6px 8px", textAlign:"center", fontWeight:600, whiteSpace:"nowrap", border:`1px solid ${C.border}`,
-                                background: isCharge ? C.navy : isSkid ? "#e8e8e8" : "#efe8dc",
+                                background: isCharge ? C.navy : isSkid ? "#e8e8e8" : C.surface,
                                 color: isCharge ? "#fff" : C.muted }}>
                                 {l}{isCharge && rateResult.basisLabel==="weight" ? " ⚖" : ""}
                               </th>;
@@ -2765,10 +3064,11 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                             {rateResult.table.map((r,i) => {
                               const isCharge = i === rateResult.chargeIdx;
                               const isSkid   = i === rateResult.skidIdx && rateResult.skidIdx !== rateResult.chargeIdx;
+                              const charged  = Math.round(r * (1 + skidTierPct(i)));
                               return <td key={i} style={{ padding:"6px 8px", textAlign:"center", border:`1px solid ${C.border}`,
                                 background: isCharge ? C.highlight : isSkid ? "#f5f5f5" : "#fff",
                                 fontWeight: isCharge ? 700 : 400,
-                                color: isCharge ? C.navy : C.text }}>${r}</td>;
+                                color: isCharge ? C.navy : C.text }}>${charged}</td>;
                             })}
                           </tr>
                         </tbody>
@@ -2782,7 +3082,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <div style={{ fontSize:16, fontWeight:700, color:C.navy, marginBottom:14 }}>Fuel Surcharge</div>
                   <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
                     {FSC_OPTS.map(o => (
-                      <button key={o.v} onClick={()=>setFsc(o.v)} style={{ padding:"9px 18px", fontSize:14, fontWeight:fsc===o.v?700:400, borderRadius:8, cursor:"pointer", background:fsc===o.v?C.navy:"#efe8dc", color:fsc===o.v?"#fff":C.text, border:`1.5px solid ${fsc===o.v?C.navy:C.border}` }}>
+                      <button key={o.v} onClick={()=>setFsc(o.v)} style={{ padding:"9px 18px", fontSize:14, fontWeight:fsc===o.v?700:400, borderRadius:R.md, cursor:"pointer", background:fsc===o.v?C.navy:C.surface, color:fsc===o.v?"#fff":C.text, border:`1px solid ${fsc===o.v?C.navy:C.border}` }}>
                         {o.l}
                       </button>
                     ))}
@@ -2794,7 +3094,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <div style={{ fontSize:16, fontWeight:700, color:C.navy, marginBottom:14 }}>Accessorials</div>
                   <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
                     {ACC_OPTS.map(a => (
-                      <button key={a.id} onClick={()=>setAccs(p=>({...p,[a.id]:!p[a.id]}))} style={{ padding:"9px 18px", fontSize:14, borderRadius:8, cursor:"pointer", fontWeight:accs[a.id]?600:400, background:accs[a.id]?C.navy:"#efe8dc", color:accs[a.id]?"#fff":C.text, border:`1.5px solid ${accs[a.id]?C.navy:C.border}` }}>
+                      <button key={a.id} onClick={()=>setAccs(p=>({...p,[a.id]:!p[a.id]}))} style={{ padding:"9px 18px", fontSize:14, borderRadius:R.md, cursor:"pointer", fontWeight:accs[a.id]?600:400, background:accs[a.id]?C.navy:C.surface, color:accs[a.id]?"#fff":C.text, border:`1px solid ${accs[a.id]?C.navy:C.border}` }}>
                         {a.l} <span style={{ color:C.subtle, fontWeight:400, fontSize:12 }}>({a.n})</span>
                       </button>
                     ))}
@@ -2820,11 +3120,16 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
                 {/* Generate Quote button */}
                 <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                  <button onClick={handleQuote} disabled={geocoding||!base||!brokerEmail.trim()} style={{ padding:"14px 28px", fontSize:15, fontWeight:700, borderRadius:8, cursor:"pointer", background:geocoding||!base||!brokerEmail.trim()?"#d9d0c2":C.navy, color:"#fff", border:"none", width:"100%" }}>
+                  {sameLaneMultiSkid && (
+                    <button onClick={handleRateTable} disabled={geocoding} style={{ padding:"14px 28px", fontSize:15, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:geocoding?C.borderStrong:C.amber, color:"#fff", border:"none", width:"100%" }}>
+                      📊 Generate Rate Table ({shipments.length} skid counts) →
+                    </button>
+                  )}
+                  <button onClick={handleQuote} disabled={geocoding||!base||!brokerEmail.trim()} style={{ padding:"14px 28px", fontSize:15, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:geocoding||!base||!brokerEmail.trim()?C.borderStrong:C.navy, color:"#fff", border:"none", width:"100%" }}>
                     {geocoding ? "Resolving location…" : "Generate Quote →"}
                   </button>
                   {!brokerEmail.trim() && <div style={{ fontSize:12, color:C.amber, textAlign:"center" }}>Broker email is required before generating a quote.</div>}
-                  <button onClick={()=>{setStep("input");setError(null);}} style={{ padding:"11px 22px", fontSize:14, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500, width:"100%" }}>
+                  <button onClick={()=>{setStep("input");setError(null);}} style={{ padding:"11px 22px", fontSize:14, borderRadius:R.md, cursor:"pointer", background:C.surface, color:C.text, border:`1px solid ${C.border}`, fontWeight:500, width:"100%" }}>
                     ← Back
                   </button>
                   {error && <div style={{ fontSize:14, color:C.error }}>⚠ {error}</div>}
@@ -2839,7 +3144,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
           <>
             {/* Top action bar */}
             <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"center", marginBottom:4 }}>
-              {shipments.length > 1 && quoteTexts.filter(Boolean).length > 1 && (
+              {!rateTableMode && shipments.length > 1 && quoteTexts.filter(Boolean).length > 1 && (
                 <button onClick={()=>{
                   const all = quoteTexts.filter((qt, i) => qt && !allShipmentRates[i]?.unserviced).join("\n\n" + "─".repeat(40) + "\n\n");
                   const ta = document.createElement("textarea"); ta.value = all;
@@ -2848,13 +3153,13 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   try { document.execCommand("copy"); } catch(e) {}
                   document.body.removeChild(ta);
                   setAllCopied(true); setTimeout(()=>setAllCopied(false),2500);
-                }} style={{ padding:"13px 24px", fontSize:15, fontWeight:700, borderRadius:8, cursor:"pointer", background:allCopied?C.green:C.amber, color:"#fff", border:"none", transition:"background 0.3s" }}>
+                }} style={{ padding:"13px 24px", fontSize:15, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:allCopied?C.green:C.amber, color:"#fff", border:"none", transition:"background 0.3s" }}>
                   {allCopied ? "✓ All Copied!" : `Copy All ${quoteTexts.filter((qt,i) => qt && !allShipmentRates[i]?.unserviced).length} Quotes`}
                 </button>
               )}
-              {shipments.length > 1 && quoteTexts.filter(Boolean).length > 1 && (
+              {!rateTableMode && shipments.length > 1 && quoteTexts.filter(Boolean).length > 1 && (
                 <button onClick={sendCombinedQuoteEmail} disabled={combinedSendState==="sending"||!brokerEmail.trim()} style={{
-                  padding:"13px 24px", fontSize:15, fontWeight:700, borderRadius:8,
+                  padding:"13px 24px", fontSize:15, fontWeight:700, borderRadius:R.md,
                   cursor: combinedSendState==="sending"||!brokerEmail.trim() ? "not-allowed" : "pointer",
                   background: combinedSendState==="sent" ? C.green : combinedSendState==="error" ? C.error : C.navy,
                   color:"#fff", border:"none", transition:"background 0.3s",
@@ -2862,11 +3167,11 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   {combinedSendState==="sending" ? "Sending…" : combinedSendState==="sent" ? "✓ Sent" : combinedSendState==="error" ? "✗ Failed — retry" : `Combine ${quoteTexts.filter((qt,i) => qt && !allShipmentRates[i]?.unserviced).length} Into One Email`}
                 </button>
               )}
-              <button onClick={()=>{setStep("review");setError(null);}} style={{ padding:"12px 22px", fontSize:15, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500 }}>
+              <button onClick={()=>{setStep("review");setError(null);}} style={{ padding:"12px 22px", fontSize:15, borderRadius:R.md, cursor:"pointer", background:C.surface, color:C.text, border:`1px solid ${C.border}`, fontWeight:500 }}>
                 ← Adjust
               </button>
-              <button onClick={()=>{ setStep("input"); setEmail(""); setParsed(null); setShipments([]); setRateCity(null); setRateResult(null); setQuoteText(""); setQuoteTexts([]); setAllShipmentRates([]); setError(null); setCombinedSendState("idle"); setCombinedResults([]); }}
-                style={{ padding:"12px 22px", fontSize:15, borderRadius:8, cursor:"pointer", background:"#efe8dc", color:C.text, border:`1.5px solid ${C.border}`, fontWeight:500 }}>
+              <button onClick={()=>{ setStep("input"); setEmail(""); setParsed(null); setShipments([]); setRateCity(null); setRateResult(null); setQuoteText(""); setQuoteTexts([]); setAllShipmentRates([]); setError(null); setCombinedSendState("idle"); setCombinedResults([]); setRateTableMode(false); setRateTableText(""); setRateTableSendState("idle"); setRateTableRecipient(null); }}
+                style={{ padding:"12px 22px", fontSize:15, borderRadius:R.md, cursor:"pointer", background:C.surface, color:C.text, border:`1px solid ${C.border}`, fontWeight:500 }}>
                 New Quote
               </button>
             </div>
@@ -2876,13 +3181,56 @@ Be concise and actionable. When asked for recommendations, be specific about whi
               </div>
             )}
 
+            {/* Rate table card — same lane, multiple skid counts */}
+            {rateTableMode && (
+              <div style={{ ...card, marginBottom:12 }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:12, marginBottom:12, paddingBottom:12, borderBottom:`1px solid ${C.border}` }}>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:700, color:C.green, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:2 }}>
+                      Rate Table — {shipments.length} skid counts
+                    </div>
+                    <div style={{ fontSize:18, fontWeight:800, color:C.navy }}>
+                      {shipments[0]?.pickup_location || shipments[0]?.origin} → {shipments[0]?.dest_city}, {shipments[0]?.dest_state}
+                    </div>
+                  </div>
+                </div>
+                <textarea value={rateTableText} onChange={e=>setRateTableText(e.target.value)}
+                  style={{ ...input, height:360, resize:"vertical", lineHeight:1.75, fontFamily:"'Courier New', monospace", fontSize:13, background:C.surfaceLight }}
+                />
+                <button onClick={()=>{
+                  const ta = document.createElement("textarea"); ta.value = rateTableText;
+                  ta.style.position="fixed"; ta.style.top="0"; ta.style.left="0"; ta.style.width="2em"; ta.style.height="2em"; ta.style.opacity="0";
+                  document.body.appendChild(ta); ta.focus(); ta.select();
+                  try { document.execCommand("copy"); } catch(e) {}
+                  document.body.removeChild(ta);
+                  setRateTableCopied(true); setTimeout(()=>setRateTableCopied(false),2500);
+                }} style={{ marginTop:10, padding:"10px 22px", fontSize:14, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:rateTableCopied?C.green:C.amber, color:"#fff", border:"none", transition:"background 0.3s" }}>
+                  {rateTableCopied ? "✓ Copied!" : "Copy Rate Table"}
+                </button>
+                <button onClick={sendRateTableEmail} disabled={rateTableSendState==="sending"||!brokerEmail.trim()} style={{
+                  marginTop:10, marginLeft:10, padding:"10px 22px", fontSize:14, fontWeight:700, borderRadius:R.md,
+                  cursor: rateTableSendState==="sending"||!brokerEmail.trim() ? "not-allowed" : "pointer",
+                  background: rateTableSendState==="sent" ? C.green : rateTableSendState==="error" ? C.error : C.navy,
+                  color:"#fff", border:"none", transition:"background 0.3s",
+                }}>
+                  {rateTableSendState==="sending" ? "Sending…" : rateTableSendState==="sent" ? "✓ Sent" : rateTableSendState==="error" ? "✗ Failed — retry" : "Send Email"}
+                </button>
+                <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>
+                  {rateTableRecipient
+                    ? `→ ${rateTableRecipient}`
+                    : `will route to ${routeQuoteEmail(shipments[0]?.dest_state, shipments[0]?.direction)}`}
+                </div>
+                {!brokerEmail.trim() && <div style={{ fontSize:12, color:C.amber, marginTop:6 }}>Broker email is required before sending.</div>}
+              </div>
+            )}
+
             {/* Stacked quote cards - one per shipment */}
-            {(shipments.length > 0 ? shipments : [parsed]).map((s, i) => {
+            {!rateTableMode && (shipments.length > 0 ? shipments : [parsed]).map((s, i) => {
               const asr = allShipmentRates[i] || {};
               const qt = quoteTexts[i] || "";
               const isUnservicedCard = !!asr.unserviced;
               return (
-                <div key={i} style={{ ...card, border:`1.5px solid ${isUnservicedCard ? "#fca5a5" : C.border}`, marginBottom:12, background: isUnservicedCard ? "#fff8f8" : C.card }}>
+                <div key={i} style={{ ...card, border:`1px solid ${isUnservicedCard ? "#fca5a5" : C.border}`, marginBottom:12, background: isUnservicedCard ? "#fff8f8" : C.card }}>
                   {/* Lane header */}
                   <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:12, marginBottom:12, paddingBottom:12, borderBottom:`1px solid ${isUnservicedCard ? "#fca5a5" : C.border}` }}>
                     <div>
@@ -2909,13 +3257,13 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   </div>
 
                   {isUnservicedCard ? (
-                    <div style={{ padding:"18px 20px", background:"#fef2f2", border:"1px solid #fca5a5", borderRadius:10, color:C.error, fontSize:14, fontWeight:500 }}>
+                    <div style={{ padding:"18px 20px", background:C.errorLight, border:"1px solid #fca5a5", borderRadius:R.lg, color:C.error, fontSize:14, fontWeight:500 }}>
                       ✗ We do not service this area — {asr.unserviced}
                     </div>
                   ) : (
                     <>
                       <textarea value={qt} onChange={e=>{ setQuoteTexts(prev=>{ const u=[...prev]; u[i]=e.target.value; if(i===activeIdx) setQuoteText(e.target.value); return u; }); }}
-                        style={{ ...input, height:260, resize:"vertical", lineHeight:1.75, fontFamily:"'Courier New', monospace", fontSize:13, background:"#f7f4ee" }}
+                        style={{ ...input, height:260, resize:"vertical", lineHeight:1.75, fontFamily:"'Courier New', monospace", fontSize:13, background:C.surfaceLight }}
                       />
                       <button onClick={()=>{
                         const ta = document.createElement("textarea"); ta.value = qt;
@@ -2924,11 +3272,11 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                         try { document.execCommand("copy"); } catch(e) {}
                         document.body.removeChild(ta);
                         setCopiedIdx(i); setTimeout(()=>setCopiedIdx(null),2500);
-                      }} style={{ marginTop:10, padding:"10px 22px", fontSize:14, fontWeight:700, borderRadius:8, cursor:"pointer", background:copiedIdx===i?C.green:C.amber, color:"#fff", border:"none", transition:"background 0.3s" }}>
+                      }} style={{ marginTop:10, padding:"10px 22px", fontSize:14, fontWeight:700, borderRadius:R.md, cursor:"pointer", background:copiedIdx===i?C.green:C.amber, color:"#fff", border:"none", transition:"background 0.3s" }}>
                         {copiedIdx===i ? "✓ Copied!" : shipments.length>1 ? `Copy Quote ${i+1}` : "Copy Quote"}
                       </button>
                       <button onClick={()=>sendQuoteEmail(i)} disabled={emailSendState[i]==="sending"||!brokerEmail.trim()} style={{
-                        marginTop:10, marginLeft:10, padding:"10px 22px", fontSize:14, fontWeight:700, borderRadius:8,
+                        marginTop:10, marginLeft:10, padding:"10px 22px", fontSize:14, fontWeight:700, borderRadius:R.md,
                         cursor: emailSendState[i]==="sending"||!brokerEmail.trim() ? "not-allowed" : "pointer",
                         background: emailSendState[i]==="sent" ? C.green : emailSendState[i]==="error" ? C.error : C.navy,
                         color:"#fff", border:"none", transition:"background 0.3s",
@@ -2957,7 +3305,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
 
         {/* Chat panel */}
         {agentOpen && (
-          <div style={{ width:380, height:520, background:"#fff", borderRadius:16, boxShadow:"0 8px 40px rgba(0,0,0,0.18)", display:"flex", flexDirection:"column", overflow:"hidden", border:"1px solid #e7dfd2" }}>
+          <div style={{ width:380, height:520, background:"#fff", borderRadius:R.xl, boxShadow:"0 12px 44px rgba(27,35,46,0.20)", display:"flex", flexDirection:"column", overflow:"hidden", border:`1px solid ${C.border}` }}>
             {/* Header */}
             <div style={{ background:C.navy, padding:"14px 18px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
               <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -2988,7 +3336,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:16 }}>
                     {["What loads are on the board?","Which driver fits this week's loads?","Any capacity issues I should know about?"].map(s=>(
                       <button key={s} onClick={()=>{ setAgentInput(""); callAgent(s); }}
-                        style={{ padding:"7px 12px", background:"#f7f4ee", border:"1px solid #e7dfd2", borderRadius:8, fontSize:12, fontWeight:600, color:C.navy, cursor:"pointer", textAlign:"left" }}>
+                        style={{ padding:"7px 12px", background:C.surfaceLight, border:`1px solid ${C.border}`, borderRadius:R.md, fontSize:12, fontWeight:600, color:C.navy, cursor:"pointer", textAlign:"left" }}>
                         {s}
                       </button>
                     ))}
@@ -3010,7 +3358,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   if (!text) return null;
                   return (
                     <div key={i} style={{ display:"flex", justifyContent:"flex-start" }}>
-                      <div style={{ maxWidth:"85%", background:"#efe8dc", color:C.text, borderRadius:"14px 14px 14px 4px", padding:"9px 13px", fontSize:13, lineHeight:1.6, whiteSpace:"pre-wrap" }}>
+                      <div style={{ maxWidth:"85%", background:C.surface, color:C.text, borderRadius:"14px 14px 14px 4px", padding:"9px 13px", fontSize:13, lineHeight:1.6, whiteSpace:"pre-wrap" }}>
                         {text}
                       </div>
                     </div>
@@ -3020,7 +3368,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
               })}
               {agentLoading && (
                 <div style={{ display:"flex", justifyContent:"flex-start" }}>
-                  <div style={{ background:"#efe8dc", borderRadius:"14px 14px 14px 4px", padding:"9px 14px", display:"flex", gap:5, alignItems:"center" }}>
+                  <div style={{ background:C.surface, borderRadius:"14px 14px 14px 4px", padding:"9px 14px", display:"flex", gap:5, alignItems:"center" }}>
                     {[0,1,2].map(i=><div key={i} style={{ width:7, height:7, borderRadius:"50%", background:C.muted, animation:"bounce 1.2s infinite", animationDelay:`${i*0.2}s` }}/>)}
                   </div>
                 </div>
@@ -3028,19 +3376,19 @@ Be concise and actionable. When asked for recommendations, be specific about whi
             </div>
 
             {/* Input */}
-            <div style={{ padding:"10px 12px", borderTop:"1px solid #e7dfd2", display:"flex", gap:8 }}>
+            <div style={{ padding:"10px 12px", borderTop:`1px solid ${C.border}`, display:"flex", gap:8 }}>
               <input
                 value={agentInput}
                 onChange={e=>setAgentInput(e.target.value)}
                 onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey&&agentInput.trim()){ e.preventDefault(); const msg=agentInput.trim(); setAgentInput(""); callAgent(msg); }}}
                 placeholder="Ask about loads, trucks, drivers…"
                 disabled={agentLoading}
-                style={{ flex:1, padding:"9px 12px", border:"1px solid #e7dfd2", borderRadius:10, fontSize:13, outline:"none", background: agentLoading?"#f7f4ee":"#fff" }}
+                style={{ flex:1, padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:R.md, fontSize:13, outline:"none", background: agentLoading?C.surfaceLight:"#fff" }}
               />
               <button
                 onClick={()=>{ const msg=agentInput.trim(); if(msg){ setAgentInput(""); callAgent(msg); }}}
                 disabled={agentLoading||!agentInput.trim()}
-                style={{ padding:"9px 14px", background: agentLoading||!agentInput.trim()?"#e7dfd2":C.amber, color:"#fff", border:"none", borderRadius:10, fontSize:13, fontWeight:700, cursor: agentLoading||!agentInput.trim()?"not-allowed":"pointer" }}>
+                style={{ padding:"9px 14px", background: agentLoading||!agentInput.trim()?C.borderStrong:C.burgundy, color:"#fff", border:"none", borderRadius:R.md, fontSize:13, fontWeight:700, cursor: agentLoading||!agentInput.trim()?"not-allowed":"pointer" }}>
                 ↑
               </button>
             </div>
