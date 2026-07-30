@@ -930,19 +930,39 @@ const card  = { background:"#fff", border:`1px solid ${C.border}`, borderRadius:
 // works with no network in dev. Pins are divIcons instead of L.marker's default
 // icon: that one points at PNG assets which break under bundlers, and divIcon
 // takes the brand colours directly.
+const PIN_SHADOW = "0 1px 5px rgba(27,35,46,0.45)";
+
+// Popup/tooltip content is built as an HTML string, and these labels come from
+// parsed email text — escape before interpolating.
+const esc = (s) => String(s ?? "").replace(/[<>&"]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;" }[c]));
+
 const mapPin = (color, size = 16, rotate = 0) => L.divIcon({
   className: "",
   html: `<div style="width:${size}px;height:${size}px;background:${color};border:3px solid #fff;`
-      + `box-shadow:0 1px 5px rgba(27,35,46,0.45);border-radius:${rotate ? "3px" : "50%"};`
+      + `box-shadow:${PIN_SHADOW};border-radius:${rotate ? "3px" : "50%"};`
       + `transform:rotate(${rotate}deg)"></div>`,
   iconSize:   [size + 6, size + 6],
   iconAnchor: [(size + 6) / 2, (size + 6) / 2],
 });
 
-function LaneMap({ pickup, dest, ratePoint, height = 260 }) {
+// Used only once a load actually has extra stops — with a plain two-point lane
+// the numbers are noise, so the simple dots above stay.
+const numberedPin = (color, n, size = 22) => L.divIcon({
+  className: "",
+  html: `<div style="width:${size}px;height:${size}px;background:${color};border:2px solid #fff;`
+      + `border-radius:50%;box-shadow:${PIN_SHADOW};display:flex;align-items:center;`
+      + `justify-content:center;color:#fff;font-weight:700;font-size:11px;line-height:1">${n}</div>`,
+  iconSize:   [size + 4, size + 4],
+  iconAnchor: [(size + 4) / 2, (size + 4) / 2],
+});
+
+function LaneMap({ pickup, dest, ratePoint, extraPickups = [], extraDeliveries = [], height = 260 }) {
   const holder    = useRef(null);
   const mapRef    = useRef(null);
   const layersRef = useRef(null);
+  const boundsRef = useRef(null);
+  const [zoomOn, setZoomOn]     = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   // Finite-number checks, not just != null: anchor coords come through
   // `+l.anchor_lat`, so a null column arrives as 0 (a pin in the Atlantic) and a
@@ -951,14 +971,23 @@ function LaneMap({ pickup, dest, ratePoint, height = 260 }) {
   const hasLane       = ok(pickup?.lat, pickup?.lon, dest?.lat, dest?.lon);
   const showRatePoint = !!ratePoint?.distinct && ok(ratePoint?.lat, ratePoint?.lon);
 
+  // Stops are only plottable once their geocode lands, so drop the rest.
+  const pStops = extraPickups.filter(s => ok(s?.lat, s?.lon));
+  const dStops = extraDeliveries.filter(s => ok(s?.lat, s?.lon));
+  const multi  = pStops.length + dStops.length > 0;
+  // These arrays are rebuilt every render, so they can't go in a dep array
+  // directly — collapse them to a value that only changes when the data does.
+  const stopsKey = JSON.stringify([...pStops, ...dStops].map(s => [s.lat, s.lon, s.label, s.charge, s.km]));
+
   // Build the map once; tear it down on unmount. Leaflet refuses to initialise
   // a container that still carries a _leaflet_id, so the remove() in cleanup is
   // what keeps StrictMode's double-mount from throwing.
   useEffect(() => {
     if (!holder.current || mapRef.current) return;
     const map = L.map(holder.current, {
-      // The map sits inside a scrolling column — the wheel has to scroll the
-      // page, not zoom, or staff get trapped scrolling past it.
+      // Off by default: the map sits in a scrolling column, so an armed wheel
+      // would swallow page scroll. Clicking the map opts in (see below), and
+      // moving the pointer off it hands scrolling straight back.
       scrollWheelZoom: false,
       zoomSnap: 0.25,
     });
@@ -967,9 +996,21 @@ function LaneMap({ pickup, dest, ratePoint, height = 260 }) {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map);
     layersRef.current = L.layerGroup().addTo(map);
+    map.on("click", () => { map.scrollWheelZoom.enable(); setZoomOn(true); });
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; layersRef.current = null; };
   }, []);
+
+  const releaseZoom = () => {
+    if (!mapRef.current) return;
+    mapRef.current.scrollWheelZoom.disable();
+    setZoomOn(false);
+  };
+
+  const fit = () => {
+    const map = mapRef.current;
+    if (map && boundsRef.current) map.fitBounds(boundsRef.current, { padding:[36,36], maxZoom:9 });
+  };
 
   // Redraw whenever the resolved coordinates change — geocoding lands async, so
   // the first paint often has no destination yet.
@@ -982,51 +1023,143 @@ function LaneMap({ pickup, dest, ratePoint, height = 260 }) {
     const to   = [dest.lat,   dest.lon];
     const pts  = [from, to];
 
+    // Both hover tooltip and click popup: the tooltip is the quick desktop
+    // read, the popup carries the detail and is the only one that works on a
+    // touchscreen.
+    const place = (pos, icon, title, detail) =>
+      L.marker(pos, { icon }).addTo(layers)
+        .bindTooltip(title)
+        .bindPopup(`<b>${esc(title)}</b>${detail ? `<br/>${esc(detail)}` : ""}`);
+
     L.polyline([from, to], { color:C.burgundy, weight:3, opacity:0.75, dashArray:"8 8" }).addTo(layers);
-    L.marker(from, { icon:mapPin(C.burgundy) }).addTo(layers).bindTooltip(`Pickup — ${pickup.label}`);
-    L.marker(to,   { icon:mapPin(C.navy)     }).addTo(layers).bindTooltip(`Delivery — ${dest.label}`);
+
+    // Numbering follows the order the load is actually run: pickup, any extra
+    // pickups, then the delivery and any extra deliveries.
+    let n = 0;
+    const seq = () => (multi ? ++n : null);
+    const pin = (color, size, rotate) => { const i = seq(); return i ? numberedPin(color, i, 22) : mapPin(color, size, rotate); };
+
+    place(from, pin(C.burgundy, 16), `Pickup — ${pickup.label}`);
+    pStops.forEach(s => {
+      // Spurs mirror how the charge is actually computed — extra pickups are
+      // measured from the pickup, extra deliveries from the delivery.
+      L.polyline([from, [s.lat, s.lon]], { color:C.burgundy, weight:2, opacity:0.5, dashArray:"3 6" }).addTo(layers);
+      place([s.lat, s.lon], pin(C.burgundy, 13), `Extra pickup — ${s.label}`,
+        s.charge != null ? `+$${s.charge}${s.km != null ? ` · ${s.km} km from pickup` : ""}` : null);
+      pts.push([s.lat, s.lon]);
+    });
+
+    place(to, pin(C.navy, 16), `Delivery — ${dest.label}`);
+    dStops.forEach(s => {
+      L.polyline([to, [s.lat, s.lon]], { color:C.navy, weight:2, opacity:0.5, dashArray:"3 6" }).addTo(layers);
+      place([s.lat, s.lon], pin(C.navy, 13), `Extra delivery — ${s.label}`,
+        s.charge != null ? `+$${s.charge}${s.km != null ? ` · ${s.km} km from delivery` : ""}` : null);
+      pts.push([s.lat, s.lon]);
+    });
 
     if (showRatePoint) {
       const rp = [ratePoint.lat, ratePoint.lon];
       L.polyline([to, rp], { color:C.subtle, weight:2, opacity:0.9 }).addTo(layers);
-      L.marker(rp, { icon:mapPin(C.green, 14, 45) }).addTo(layers)
-        .bindTooltip(`Rate point — ${ratePoint.label}${ratePoint.distance != null ? ` (${ratePoint.distance} mi from delivery)` : ""}`);
+      place(rp, mapPin(C.green, 14, 45), `Rate point — ${ratePoint.label}`,
+        ratePoint.distance != null ? `${ratePoint.distance} mi from delivery · the price is derived from here` : null);
       pts.push(rp);
     }
 
-    map.fitBounds(L.latLngBounds(pts), { padding:[36,36], maxZoom:9 });
+    boundsRef.current = L.latLngBounds(pts);
+    fit();
     // The column can finish laying out after the map mounts; without this the
     // tiles render against a stale size and leave grey gaps.
     map.invalidateSize();
-  }, [hasLane, showRatePoint, pickup?.lat, pickup?.lon, pickup?.label,
+  }, [hasLane, showRatePoint, multi, stopsKey,
+      pickup?.lat, pickup?.lon, pickup?.label,
       dest?.lat, dest?.lon, dest?.label,
       ratePoint?.lat, ratePoint?.lon, ratePoint?.label, ratePoint?.distance]);
 
+  // Leaflet caches its container size and can't detect changes itself, so any
+  // resize leaves the new area as blank grey tiles. Observing the box covers
+  // every cause at once — expanding, the window resizing, the column reflowing —
+  // rather than firing invalidateSize() at moments we guess are correct.
+  //
+  // The holder deliberately has no height transition: an animated height settles
+  // ~200ms after `expanded` flips, so measuring on the state change read the old
+  // size and left a grey strip. Snapping means the observer sees the final box
+  // immediately.
+  useEffect(() => {
+    const el = holder.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => mapRef.current?.invalidateSize());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Re-frame the lane for the new viewport size once it's applied.
+  useEffect(() => {
+    if (!mapRef.current) return;
+    mapRef.current.invalidateSize();
+    fit();
+  }, [expanded]);
+
   if (!hasLane) return null;
 
+  const stopRow = (s, kind) => ({
+    color: kind === "pickup" ? C.burgundy : C.navy, ring: true,
+    label: kind === "pickup" ? "+ Pickup" : "+ Delivery",
+    value: `${s.label}${s.charge != null ? ` · +$${s.charge}` : ""}${s.km != null ? ` (${s.km} km)` : ""}`,
+  });
+
   const legend = [
-    { color:C.burgundy, label:"Pickup",     value:pickup.label, diamond:false },
-    { color:C.navy,     label:"Delivery",   value:dest.label,   diamond:false },
+    { color:C.burgundy, label:"Pickup",   value:pickup.label },
+    ...pStops.map(s => stopRow(s, "pickup")),
+    { color:C.navy,     label:"Delivery", value:dest.label },
+    ...dStops.map(s => stopRow(s, "delivery")),
     showRatePoint ? {
       color:C.green, label:"Rate point", diamond:true,
       value:`${ratePoint.label}${ratePoint.distance != null ? ` · ${ratePoint.distance} mi from delivery` : ""}`,
     } : null,
   ].filter(Boolean);
 
+  const chip = { fontSize:11, fontWeight:700, padding:"4px 10px", borderRadius:R.sm, cursor:"pointer", background:C.surface, color:C.navy, border:`1px solid ${C.border}` };
+
   return (
     <div style={card}>
-      <div style={{ fontSize:14, fontWeight:700, color:C.navy, marginBottom:12 }}>Lane Map</div>
-      <div ref={holder} style={{ height, borderRadius:R.md, overflow:"hidden", border:`1px solid ${C.border}`, background:C.surfaceLight }}/>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, marginBottom:12 }}>
+        <div style={{ fontSize:14, fontWeight:700, color:C.navy }}>
+          Lane Map{multi ? ` · ${2 + pStops.length + dStops.length} stops` : ""}
+        </div>
+        <div style={{ display:"flex", gap:6 }}>
+          <button onClick={fit} style={chip} title="Re-centre on the whole lane">⤾ Reset</button>
+          {/* Both branches set the `border` shorthand rather than one overriding it
+              with `borderColor` — mixing the two makes React drop the longhand on
+              re-render, which it warns about. */}
+          <button onClick={()=>setExpanded(v=>!v)} style={expanded ? { ...chip, background:C.navy, color:"#fff", border:`1px solid ${C.navy}` } : chip}>
+            {expanded ? "⤡ Collapse" : "⤢ Expand"}
+          </button>
+        </div>
+      </div>
+
+      {/* Pointer leaving the map disarms wheel zoom, so the page scrolls again. */}
+      <div style={{ position:"relative" }} onMouseLeave={releaseZoom}>
+        <div ref={holder} style={{ height: expanded ? 560 : height, borderRadius:R.md, overflow:"hidden", border:`1px solid ${C.border}`, background:C.surfaceLight }}/>
+        <div style={{ position:"absolute", left:8, top:8, zIndex:400, pointerEvents:"none",
+          fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:R.pill,
+          background: zoomOn ? "rgba(22,163,74,0.92)" : "rgba(27,35,46,0.72)", color:"#fff" }}>
+          {zoomOn ? "scroll to zoom" : "click map to zoom"}
+        </div>
+      </div>
+
       <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:12 }}>
-        {legend.map(l => (
-          <div key={l.label} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12 }}>
-            <span style={{ width:10, height:10, flexShrink:0, background:l.color,
+        {legend.map((l, i) => (
+          <div key={`${l.label}-${i}`} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12 }}>
+            <span style={{ width:10, height:10, flexShrink:0,
+              background: l.ring ? "#fff" : l.color,
+              border: l.ring ? `2px solid ${l.color}` : "none",
               borderRadius: l.diamond ? 2 : "50%", transform: l.diamond ? "rotate(45deg)" : "none" }}/>
             <span style={{ color:C.muted, fontWeight:700, minWidth:68 }}>{l.label}</span>
             <span style={{ color:C.text }}>{l.value}</span>
           </div>
         ))}
       </div>
+      {multi && <div style={{ fontSize:11, color:C.subtle, marginTop:8 }}>Pins are numbered in run order. Click any pin for its stop charge.</div>}
     </div>
   );
 }
@@ -3036,6 +3169,16 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     distance:rateCity.distance,
                     distinct:!!isNearest,   // hide the pin when the anchor *is* the destination
                   } : null}
+                  // stopCharge is the same helper the Additional Stops pricing uses, so the
+                  // figure in a pin's popup always matches what's billed.
+                  extraPickups={(parsed.additional_pickups||[]).map(s => ({
+                    label:s.location, lat:s.lat, lon:s.lon,
+                    ...stopCharge(s.lat, s.lon, parsed.pickup_lat, parsed.pickup_lon),
+                  }))}
+                  extraDeliveries={(parsed.additional_deliveries||[]).map(s => ({
+                    label:s.location, lat:s.lat, lon:s.lon,
+                    ...stopCharge(s.lat, s.lon, parsed.dest_lat, parsed.dest_lon),
+                  }))}
                 />
 
                 {/* Rate table */}
