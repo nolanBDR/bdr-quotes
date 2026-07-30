@@ -626,6 +626,19 @@ FOOTAGE RULES — use when only length is given without width/height:
     "3 skids 96L" → footage = (3 × 96) / 24 = 12.0
     "1 skid 72 inches long" → footage = (1 × 72) / 24 = 3.0
   If broker specifies width > 48", use divisor 12 (1 across): footage = (count × length_inches) / 12.
+- CASE 3: Footage stated as a length of equipment. This is extremely common broker shorthand
+  for a partial load, and the number is the LINEAR FEET THE FREIGHT OCCUPIES — not a request
+  for a vehicle of that length:
+    "24ft dry van at 18,000 lbs" → footage = 24
+    "20ft of a trailer"          → footage = 20
+    "needs 12 ft on a flatbed"   → footage = 12
+    "takes up 8 feet"            → footage = 8
+  EXCEPTION — a full-trailer length is an equipment/FTL request, not a partial:
+    "53ft van", "48ft trailer", "full 53" → skids = "FTL", footage = null.
+  If the phrasing is genuinely ambiguous between "N feet of freight" and "a vehicle N feet
+  long" (most likely around 24-26 ft, the length of a straight truck), STILL set footage = N
+  and add a note that the reading needs confirming. Footage is the rating basis, so omitting
+  it silently drops the shipment to a lower tier and under-quotes the load.
 - Leave footage = null ONLY when skid count is given with no length or dimension info at all.
 
 MULTIPLE SHIPMENTS:
@@ -726,6 +739,7 @@ RULES:
 - Weight always in lbs. Convert: kg×2.205, tonnes×2205.
 - origin: "Ontario" unless pickup is clearly in Quebec.
 - Pieces/pallets/skids/units/PLT all count as skids.
+- footage: linear feet the freight occupies, and the rating basis — capture it whenever it's stated, however it's phrased. A bare figure ("22 linear feet", "20 ft"), or a length attached to equipment, which is normal shorthand for a partial load and NOT a request for a vehicle of that size: "24ft dry van at 18,000 lbs" → footage = 24; "20ft of a trailer" → footage = 20; "needs 12 ft on a flatbed" → footage = 12. EXCEPTION: a full-trailer length ("53ft van", "48ft trailer", "full 53") is an equipment/FTL request → skids = "FTL", footage = null. When ambiguous between "N feet of freight" and "a vehicle N feet long" (most likely around 24-26 ft, a straight truck's length), still set footage = N and note that it needs confirming — omitting footage silently drops the load a tier and under-quotes it.
 - If a line_items entry is used: each numbered item (e.g. "1. 48x40x60") = 1 skid (skids:1) unless a quantity is stated. If ONE dimension applies to a stated COUNT of identical skids — "8 skids, 45x48x54 EA", "3 skids 48x40x60", "5 pallets @ 40x48x50" — set that line item's own skids field to the stated count, not 1. Total shipment skids = sum of all line_items[].skids — it must match the shipment's top-level skids count.
 - If the document asks for rates across MULTIPLE DIFFERENT SKID COUNTS for the same lane instead of describing one load — this is a rate-table request, however it's phrased: a list like "1 skid -, 2 -, 3 -, ... 20 -", OR a range stated in prose with no line-by-line list ("rate table for 1-20 skids", "pricing for 5 to 15 skids", "per-skid rates up to 20") — expand the range into individual counts yourself. Create ONE SHIPMENT ENTRY PER SKID COUNT (listed or expanded), not one merged entry. Every entry shares the same origin/pickup_location/dest_city/dest_state/dest_zip/dest_lat/dest_lon; only \`skids\` differs.
 - accessorials: set true ONLY when the document clearly states it, false otherwise (never guess). driver_assist: "driver assist"/"unload assist". liftgate: "liftgate"/"lift gate". no_crossdock: "no crossdock"/"direct delivery only"/"must go direct". floorload: "floor loaded"/"floorloaded"/"not palletized". straight_truck: "straight truck only/required"/"no tractor trailer".
@@ -1672,7 +1686,13 @@ export default function App() {
     const updated = { ...current, [key]: value };
     setParsed(updated);
     const dir = updated.direction || "outbound";
-    if (key === "skids" || key === "origin" || key === "direction" || key === "pickup_location") {
+    // Every field that feeds getRate has to be here. `footage` and `weight_lbs`
+    // were missing, so correcting either left the previous rate on screen: a load
+    // parsed without its footage rated on weight alone, and typing the footage in
+    // changed nothing visible. That silently under-quotes — a 24 ft / 18,000 lb
+    // load showed $1,380 (11 skids, weight) instead of $1,460 (12 skids, footage).
+    if (key === "skids" || key === "footage" || key === "weight_lbs" || key === "line_items"
+        || key === "origin" || key === "direction" || key === "pickup_location") {
       const { rc, r } = computeRate(updated);
       setRateCity(rc); setRateResult(r);
       return;
