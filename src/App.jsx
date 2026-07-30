@@ -933,6 +933,27 @@ const input = { width:"100%", boxSizing:"border-box", padding:"11px 14px", fontS
 const label = { display:"block", fontSize:11, fontWeight:700, color:C.muted, marginBottom:6, letterSpacing:"0.04em", textTransform:"uppercase" };
 const card  = { background:"#fff", border:`1px solid ${C.border}`, borderRadius:R.lg, padding:24, marginBottom:16, boxShadow:S.md };
 
+// ── Quote History outcome colours ─────────────────────────────
+// Traffic-light coding: green = won, red = lost, yellow = still waiting on the
+// broker. Both "won" states share green and both "lost" states share red, so the
+// list can be scanned by colour alone; the buttons on each row still say which
+// specific outcome it is.
+//
+// The text tones are a step darker than the obvious brand ones because they also
+// colour the 18px total sitting on that row's own tint — plain C.green on the
+// green tint is only 3.15:1, under AA, where #15803d is 4.79:1.
+const OUTCOME_STYLES = {
+  accepted:       { color: "#15803d", bg: "#f0fdf4" },  // green  — broker accepted the quote
+  received:       { color: "#15803d", bg: "#f0fdf4" },  // green  — order received
+  declined:       { color: "#b91c1c", bg: "#fef2f2" },  // red    — broker declined
+  lost:           { color: "#b91c1c", bg: "#fef2f2" },  // red    — load lost
+  waiting:        { color: "#854d0e", bg: "#fefce8" },  // yellow — awaiting response
+  pending:        { color: "#854d0e", bg: "#fefce8" },  // yellow — awaiting response
+  broker_sending: { color: "#7c3aed", bg: "#f5f3ff" },  // purple — kept distinct; has its own chip
+};
+// counter / sent_load — no colour of their own yet.
+const OUTCOME_FALLBACK = { color: "#641833", bg: "#ffffff" };
+
 // ── Lane map ──────────────────────────────────────────────────
 // Pickup → delivery for the shipment being quoted, plus the rate-point anchor
 // the price is actually derived from. That third pin is the one that earns its
@@ -2669,8 +2690,9 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                   return [q.broker_name, q.broker_company, q.dest_city, q.dest_state, q.origin].some(f => (f||"").toLowerCase().includes(s));
                 })
                 .map(q => {
-                  const outcomeColor = q.outcome==="accepted" ? "#0369a1" : q.outcome==="received" ? C.green : q.outcome==="lost" ? C.error : q.outcome==="waiting" ? "#c2410c" : q.outcome==="broker_sending" ? "#7c3aed" : q.outcome==="declined" ? "#6b7280" : C.amber;
-                  const outcomeBg    = q.outcome==="accepted" ? "#eff6ff" : q.outcome==="received" ? "#f0fdf4" : q.outcome==="lost" ? "#fef2f2" : q.outcome==="waiting" ? "#fff7ed" : q.outcome==="broker_sending" ? "#f5f3ff" : q.outcome==="declined" ? C.surfaceLight : C.card;
+                  const oc = OUTCOME_STYLES[q.outcome] || OUTCOME_FALLBACK;
+                  const outcomeColor = oc.color;
+                  const outcomeBg    = oc.bg;
                   return (
                     <div key={q.timestamp} style={{ ...card, marginBottom:10, padding:0, overflow:"hidden", background:outcomeBg }}>
                       <div style={{ display:"flex", alignItems:"stretch" }}>
