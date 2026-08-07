@@ -592,6 +592,16 @@ DESTINATION RULES:
 - Always provide dest_lat and dest_lon coordinates for the destination city.
 - Convert full state/province names to 2-letter codes: Michigan→MI, Ohio→OH, Indiana→IN, Illinois→IL, Texas→TX, Tennessee→TN, Kentucky→KY, Missouri→MO, Kansas→KS, etc.
 - If "IN" appears after a US city name, it means Indiana (state abbreviation), not "inbound".
+- CRITICAL — dest_lat/dest_lon MUST be the coordinates of that city IN THE STATE GIVEN, not the
+  best-known city of that name. Many city names repeat across states, and pricing is derived from
+  these coordinates, so picking the famous one silently rates the load off a point hundreds of
+  miles away. Take the stated state as authoritative and derive the coordinates from it:
+    "Columbus, IN"     -> 39.20, -85.92   (Indiana — NOT Columbus OH at 39.96, -82.99)
+    "Springfield, MO"  -> 37.21, -93.29   (NOT Springfield IL or MA)
+    "Portland, ME"     -> 43.66, -70.26   (NOT Portland OR)
+    "Kansas City, KS"  -> 39.11, -94.63   (NOT Kansas City MO)
+  If the state is genuinely absent and the city name is ambiguous, still give your best guess but
+  add a note saying which state you assumed so it can be confirmed.
 
 WEIGHT RULES:
 - Always convert to pounds (lbs).
@@ -1631,6 +1641,35 @@ export default function App() {
     return r;
   };
 
+  // dest_lat/dest_lon arrive from the model's own memory, and for a city name that
+  // exists in several states it reaches for the famous one — "Columbus, IN" comes
+  // back with Columbus, OH coordinates. With no ZIP to fall back on, the whole
+  // rate is then derived from the wrong point: Columbus IN should anchor on
+  // Indianapolis (41 mi), not Columbus OH.
+  //
+  // Geocoding was only ever run when someone hand-edited the city or state, so a
+  // parsed shipment was rated on unverified coordinates. This re-resolves them
+  // against the city AND state, which is authoritative, and re-rates if the
+  // position actually moved. Applies to the shipment on screen; switching tabs
+  // runs it again for that one.
+  const COORD_DRIFT_MI = 25;   // ignore harmless centroid differences
+  const verifyDestCoords = useCallback(async (s, idx) => {
+    if (!s || (s.direction || "outbound") !== "outbound") return;
+    if (!s.dest_city || !s.dest_state) return;
+    try {
+      const coords = await geocodeCity(s.dest_city, s.dest_state);
+      if (!coords?.lat || !coords?.lon) return;
+      const movedMi = (s.dest_lat && s.dest_lon)
+        ? haversine(s.dest_lat, s.dest_lon, coords.lat, coords.lon)
+        : Infinity;
+      if (movedMi < COORD_DRIFT_MI) return;
+      const fixed = { ...s, dest_lat: coords.lat, dest_lon: coords.lon };
+      setShipments(prev => prev.map((x, i) => (i === idx ? fixed : x)));
+      setParsed(prev => (prev === s || prev?.dest_city === s.dest_city ? fixed : prev));
+      resolveRate(fixed);
+    } catch (e) { /* geocoder unavailable — keep the parsed coordinates */ }
+  }, [lanes]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const normalizeShipment = (s) => ({
     ...s,
     line_items:            Array.isArray(s.line_items)            ? s.line_items            : [],
@@ -1656,6 +1695,9 @@ export default function App() {
       const first = parsed_list[0];
       setParsed(first);
       resolveRate(first);
+      // Rate immediately off the parsed coordinates so the card isn't blank, then
+      // correct them against the geocoder — see verifyDestCoords.
+      verifyDestCoords(first, 0);
       setAccs(accsFromParsed(first.accessorials));
       setQuoteTexts([]);
       setRateTableMode(false);
@@ -1689,6 +1731,9 @@ export default function App() {
       const first = parsed_list[0];
       setParsed(first);
       resolveRate(first);
+      // Rate immediately off the parsed coordinates so the card isn't blank, then
+      // correct them against the geocoder — see verifyDestCoords.
+      verifyDestCoords(first, 0);
       setAccs(accsFromParsed(first.accessorials));
       setQuoteTexts([]);
       setRateTableMode(false);
@@ -2912,6 +2957,7 @@ Be concise and actionable. When asked for recommendations, be specific about whi
                     setActiveIdx(i);
                     setParsed(s);
                     resolveRate(s);
+                    verifyDestCoords(s, i);   // same coordinate check as on parse
                     setAccs(accsFromParsed(s.accessorials));
                     setQuoteText(quoteTexts[i] || "");
                   }} style={{
